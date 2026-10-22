@@ -3,11 +3,13 @@
 import * as THREE from 'three';
 import { seedOf, seedWords } from '../vendor/almanac/seeds.js';
 import { World, SIZE, CHUNK, WATER_Y, SEA } from './world.js';
-import { STONE, DIRT, WOOD, LANTERN, AXE, DROP, itemName } from './materials.js';
-import { tuftGeometry, axeGeometry } from './flora.js';
+import { STONE, DIRT, WOOD, LANTERN, AXE, PICK, DROP, itemName, isTool } from './materials.js';
+import { Swing, SWING } from './tools.js';
+import { tuftGeometry, axeGeometry, pickGeometry } from './flora.js';
 import { geo, crystalMesh, lanternMesh, leafAtlas } from './meshes.js';
 import { terrainMaterial, woodMaterial, leafMaterial, tuftMaterial, glowMaterial, U } from './shaders.js';
-import { Felling } from './felling.js';
+import { Woodcutter } from './wood.js';
+import { loadPhysics } from './physics.js';
 import { SPECIES } from './trees.js';
 import { Particles } from './particles.js';
 import { Sky } from './sky.js';
@@ -29,6 +31,7 @@ const DIG_R = 1.25; // how big a ball one dig takes out
 const BUILD_R = 1.1; // and one build heaps on
 const START_INV = [
   [AXE, 1],
+  [PICK, 1],
   [STONE, 24],
   [DIRT, 24],
   [LANTERN, 10],
@@ -62,19 +65,26 @@ ring.visible = false;
 ring.renderOrder = 12;
 scene.add(ring);
 
-// the axe in the hand: hung on the camera, at the lower right, swinging when it is used
+// the tool in the hand: hung on the camera, at the lower right, swinging when it is used
 scene.add(camera);
-const axeMat = woodMaterial();
-axeMat.depthTest = false; // always in front, never into a wall
-axeMat.side = THREE.DoubleSide;
-const axe = new THREE.Group();
-const axeMesh = new THREE.Mesh(geo(axeGeometry()), axeMat);
-axeMesh.rotation.set(0, Math.PI / 2 + 0.55, 0); // the blade forward and a little to the left, as it is held
-axeMesh.renderOrder = 100;
-axe.add(axeMesh);
-axe.position.set(0.34, -0.36, -0.55);
-camera.add(axe);
-let swing = 1; // 0..1 through a swing, 1 at rest
+const toolMat = woodMaterial();
+toolMat.depthTest = false; // always in front, never into a wall
+toolMat.side = THREE.DoubleSide;
+const held = new THREE.Group();
+const toolMeshes = {};
+for (const [id, arrays, turn] of [
+  [AXE, axeGeometry(), Math.PI / 2 + 0.55], // the blade forward and a little to the left, as it is held
+  [PICK, pickGeometry(), 0.35],
+]) {
+  const m = new THREE.Mesh(geo(arrays), toolMat);
+  m.rotation.set(0, turn, 0);
+  m.renderOrder = 100;
+  held.add(m);
+  toolMeshes[id] = m;
+}
+held.position.set(0.34, -0.36, -0.55);
+camera.add(held);
+
 
 // everything that belongs to one island
 let game = null;
@@ -97,7 +107,8 @@ function disposeIsland() {
     }
   for (const o of game.extras) scene.remove(o);
   for (const o of game.things.values()) scene.remove(o);
-  game.felling.clear();
+  game.wood.clear();
+  physics?.clear();
   game = null;
 }
 
@@ -140,9 +151,19 @@ function growIsland(name) {
   gen++;
   growing = { name, seed, saved, gen };
   growing.promise = new Promise((resolve) => (growing.resolve = resolve));
-  toWorker({ type: 'grow', gen, seed, ops: saved?.ops || [], trees: saved?.trees || [], focus: saved?.pos || null });
+  const g0 = gen;
+  // the physics engine first (the ground's meshes go to it as they arrive)
+  physicsReady.then(() => {
+    if (g0 === gen) toWorker({ type: 'grow', gen, seed, ops: saved?.ops || [], trees: (saved?.trees || []).map(([id, state]) => [id, state]), focus: saved?.pos || null });
+  });
   return growing.promise;
 }
+
+// Rapier, loaded once: rigid bodies for pieces of trees (without it, cut pieces just vanish)
+let physics = null;
+const physicsReady = loadPhysics()
+  .then((p) => (physics = p))
+  .catch((e) => console.warn('Visland: no physics engine', e));
 
 function fromWorker(m) {
   if (m.gen !== gen) return; // an answer for an island already left
@@ -179,22 +200,30 @@ function onWorld(m) {
     g.player.place(saved.pos[0], saved.pos[1], saved.pos[2]);
     [g.player.yaw, g.player.pitch] = [saved.pos[3], saved.pos[4]];
   }
+  if (!g.inv.some(([b]) => b === PICK)) g.inv.unshift([PICK, 1]);
   if (!g.inv.some(([b]) => b === AXE)) g.inv.unshift([AXE, 1]);
+  g.swing = new Swing();
   g.particles = new Particles(scene);
-  g.felling = new Felling({
+  // trees cut with the axe: saved cuts are laid again once the woodcutter is there
+  const logs = new Map((saved?.trees || []).filter((e) => e[1] === 'active').map(([id, , log]) => [id, log]));
+  for (const [id, log] of logs) if (world.trees[id]) world.trees[id].log = log;
+  g.wood = new Woodcutter({
     scene,
     world,
+    physics,
     particles: g.particles,
     sound,
     wood: woodMat,
     leaves: leafMat,
-    treeChanged: (t) => toWorker({ type: 'tree', gen, id: t.id, state: t.state, cutY: t.cutY }),
+    treeChanged: (t) => toWorker({ type: 'tree', gen, id: t.id, state: t.state }),
     give: (n) => {
       give(WOOD, n);
       ui.nameShow(`+${n} Holz (${g.inv.find(([b]) => b === WOOD)[1]})`);
     },
     say: (s) => ui.nameShow(s),
   });
+  for (const id of logs.keys()) if (world.trees[id]) g.wood.replay(world.trees[id]);
+  g.player.extra = (x, z) => g.wood.near(x, z);
   game = g;
   for (const c of world.crystals) if (!c.found) addThing(g, c);
   for (const l of world.lanterns) addThing(g, l);
@@ -232,6 +261,7 @@ function chunkOf(g, cx, cz) {
 // a chunk's ground as the worker meshed it
 function applyGround(g, cx, cz, data) {
   const c = chunkOf(g, cx, cz);
+  physics?.setGround(cx + ',' + cz, data.position, data.index);
   const geometry = geo({ position: data.position, normal: data.normal, aColor: data.color, aLight: data.light, index: data.index });
   if (c.ground) {
     c.ground.geometry.dispose();
@@ -341,18 +371,18 @@ const smooth = (x) => x * x * (3 - 2 * x);
 // what a tree is, said when it is looked at
 function treeNote(t) {
   if (t.kind === 'bush') return 'Busch · mit der Axt entfernen';
-  if (t.state === 'stump') return 'Baumstumpf · mit der Axt entfernen';
-  return `${SPECIES[t.kind].name} · mit der Axt fällen`;
+  return `${SPECIES[t.kind].name} · ${t.state === 'active' ? 'weiter hacken, wo du willst' : 'mit der Axt hacken, an Stamm oder Ast'}`;
 }
 
+// ⛏ / left click: pick up what is in reach by hand; with a tool, swing it (what it meets is worked out as it
+// swings, in toolHit); with bare hands, scrape soft ground
 function dig() {
   const g = game;
   if (!g?.playing) return;
-  const hit = g.player.target();
-  if (!hit) return;
   const w = g.world;
-  if (g.inv[g.selected]?.[0] === AXE) swing = 0;
-  if (hit.kind === 'crystal') {
+  let item = g.inv[g.selected]?.[0];
+  const hit = g.player.target(isTool(item) ? 2.5 : 6);
+  if (hit?.kind === 'crystal') {
     const c = hit.thing;
     c.found = true;
     removeThing(g, c);
@@ -361,29 +391,61 @@ function dig() {
     const n = w.crystals.filter((k) => k.found).length,
       all = n >= w.crystals.length;
     ui.toastShow(all ? `Alle Kristalle von ${g.name} gefunden! ✨` : `Kristall gefunden! ${n}/${w.crystals.length}`, all ? 6 : 3);
-  } else if (hit.kind === 'lantern') {
+    return;
+  }
+  if (hit?.kind === 'lantern') {
     w.lanterns = w.lanterns.filter((l) => l !== hit.thing);
     removeThing(g, hit.thing);
     give(LANTERN);
     sound.build();
-  } else if (hit.kind === 'tree') {
-    // trees want the axe: take it in hand if it is not
-    const ai = g.inv.findIndex(([b]) => b === AXE);
-    if (g.selected !== ai) select(ai);
-    swing = 0;
-    g.felling.chop(hit.thing, g.player);
-    return 0.5;
-  } else {
-    const [x, y, z] = hit.point.map(round2);
-    const took = w.brush(x, y, z, DIG_R, false);
-    if (!took.size) return;
-    g.ops.push(['d', x, y, z, DIG_R]);
-    // what was dug out: the material most of it was made of
-    const [mat, n] = [...took].sort((a, b) => b[1] - a[1])[0];
-    give(DROP[mat] || mat, Math.max(1, Math.round(n / 4)));
-    changed(x, y, z, DIG_R, false);
-    sound.dig();
+    return;
   }
+  if (!isTool(item)) {
+    if (hit?.kind === 'tree' || hit?.kind === 'piece') {
+      // wood wants the axe: take it in hand
+      select(g.inv.findIndex(([b]) => b === AXE));
+      item = AXE;
+    } else if (hit?.kind === 'ground') {
+      if ([STONE].includes(w.matAt(...hit.point))) return ui.nameShow('Zu hart · nimm die Spitzhacke');
+      digAt(hit.point, 0.45);
+      return 0.35;
+    } else return;
+  }
+  g.swing.start(item === AXE ? 'axe' : 'pick');
+  return SWING;
+}
+
+// what a swing met, one physics step at a time
+function toolHit(g, res) {
+  const tool = g.swing.tool;
+  if (res.kind === 'wood') {
+    g.wood.hit(res.owner, res.point, res.strength * (tool === 'axe' ? 1 : 0.4), tool);
+  } else if (tool === 'axe' && res.hard) {
+    // an axe rings off stone
+    sound.clang();
+    for (let i = 0; i < 8; i++) g.particles.spawn(res.point, [(Math.random() - 0.5) * 4, Math.random() * 3, (Math.random() - 0.5) * 4], [1, 0.85, 0.5], { size: 0.04, life: 0.4 });
+  } else {
+    const r = (tool === 'pick' ? (res.hard ? 0.5 : 0.62) : 0.35) * (0.6 + 0.4 * Math.min(1, res.strength));
+    digAt(res.point, r);
+  }
+}
+
+function digAt(point, r) {
+  const g = game,
+    w = g.world;
+  const [x, y, z] = point.map(round2);
+  const took = w.brush(x, y, z, r, false);
+  if (!took.size) return;
+  g.ops.push(['d', x, y, z, r]);
+  // what was dug out: the material most of it was made of (a point is an eighth of a cubic metre now)
+  const [mat, n] = [...took].sort((a, b) => b[1] - a[1])[0];
+  g.dug = (g.dug || 0) + n;
+  if (g.dug >= 8) {
+    give(DROP[mat] || mat, Math.floor(g.dug / 8));
+    g.dug %= 8;
+  }
+  changed(x, y, z, r, false);
+  sound.dig();
 }
 
 function build() {
@@ -391,7 +453,7 @@ function build() {
   if (!g?.playing) return;
   const hit = g.player.target();
   const slot = g.inv[g.selected];
-  if (!hit || hit.kind !== 'ground' || !slot || slot[1] <= 0 || slot[0] === AXE) return;
+  if (!hit || hit.kind !== 'ground' || !slot || slot[1] <= 0 || isTool(slot[0])) return;
   const w = g.world;
   if (slot[0] === LANTERN) {
     if (hit.normal[1] < 0.4) return ui.nameShow('Laternen brauchen ebenen Boden');
@@ -425,7 +487,7 @@ function persist() {
   store.save(g.seed, {
     name: g.name,
     ops: g.ops,
-    trees: w.trees.filter((t) => t.state === 'stump' || t.state === 'gone').map((t) => [t.id, t.state]),
+    trees: w.trees.filter((t) => t.state !== 'standing').map((t) => (t.state === 'active' ? [t.id, 'active', t.log] : [t.id, 'gone'])),
     found: w.crystals.filter((c) => c.found).map((c) => c.id),
     lanterns: w.lanterns,
     inv: g.inv,
@@ -486,8 +548,8 @@ function enterGame() {
   input.enabled = true;
   ui.showMenu(false);
   ui.help.textContent = touch
-    ? 'Links: laufen · Rechts wischen: schauen · ⛏ graben, am Baum: hacken · ▣ bauen'
-    : 'Klicken zum Steuern · WASD laufen · Maus schauen · Linksklick graben, am Baum: hacken · Rechtsklick bauen · 1–9 / Mausrad: wählen · M: Menü';
+    ? 'Links: laufen · Rechts wischen: schauen · ⛏ zuschlagen (Axt: Holz, Spitzhacke: Boden und Stein) · ▣ bauen'
+    : 'Klicken zum Steuern · WASD laufen · Maus schauen · Linksklick zuschlagen · Rechtsklick bauen · 1–9 / Mausrad: Werkzeug · M: Menü';
   // the controls after the welcome, so the two notes never cover each other
   clearTimeout(helpTimer);
   helpTimer = setTimeout(() => {
@@ -522,13 +584,18 @@ function frame(now) {
     physicsClock = Math.min(physicsClock + dt, STEP * 6);
     while (physicsClock >= STEP) {
       p.update(STEP, wish);
+      const res = g.swing.step(STEP, p, g.world, g.wood);
+      if (res) toolHit(g, res);
+      physics?.step(STEP);
+      g.wood.step(STEP, p);
       physicsClock -= STEP;
     }
     const [cx, cy, cz] = p.drawn(physicsClock / STEP);
     camera.position.set(cx, cy + (p.eyeY - p.y), cz);
     camera.rotation.set(p.pitch, p.yaw, 0);
     const hit = p.target();
-    ring.visible = hit?.kind === 'ground';
+    ring.visible = hit?.kind === 'ground' && g.inv[g.selected]?.[0] !== AXE;
+    ring.scale.setScalar(g.inv[g.selected]?.[0] === PICK ? 0.5 : 0.36);
     if (ring.visible) {
       const [x, y, z] = hit.point,
         n = hit.normal;
@@ -543,13 +610,14 @@ function frame(now) {
           : { crystal: 'Kristall · abbauen zum Einsammeln', lantern: 'Laterne · abbauen zum Mitnehmen' }[hit.kind],
       );
     lastTarget = k;
-    // the axe: shown while it is in hand, swinging back, down hard, and up again
-    axe.visible = g.inv[g.selected]?.[0] === AXE;
-    swing = Math.min(1, swing + dt / 0.42);
-    const lift = swing < 0.3 ? smooth(swing / 0.3) * 0.9 : swing < 0.5 ? 0.9 - smooth((swing - 0.3) / 0.2) * 1.8 : -0.9 + smooth((swing - 0.5) / 0.5) * 0.9;
+    // the tool in hand, swinging back, down hard, and up again (or stopped where it struck)
+    const item = g.inv[g.selected]?.[0];
+    held.visible = isTool(item);
+    for (const [id, m] of Object.entries(toolMeshes)) m.visible = +id === item;
+    const [lift, round] = g.swing.pose();
     const walk = Math.hypot(p.vx, p.vz) > 0.5 && p.onGround ? Math.sin(g.time * 9) : 0;
-    axe.rotation.set(-0.35 + lift, 0.2, -0.15);
-    axe.position.set(0.34, -0.36 + walk * 0.012 + Math.max(0, lift) * 0.05, -0.55);
+    held.rotation.set(-0.35 + lift, 0.2 + round, -0.15 - round * 0.6);
+    held.position.set(0.34 - round * 0.12, -0.36 + walk * 0.012 + Math.max(0, lift) * 0.05, -0.55);
     // tell the worker where the player is now and then, so the ground near them is meshed finely
     if (Math.hypot(p.x - (g.focus?.[0] ?? -99), p.z - (g.focus?.[1] ?? -99)) > 4) {
       g.focus = [p.x, p.z];
@@ -562,7 +630,7 @@ function frame(now) {
   } else {
     // the title: the camera circles the island
     ring.visible = false;
-    axe.visible = false;
+    held.visible = false;
     const a = g.time * 0.05;
     camera.position.set(SIZE / 2 + Math.cos(a) * 125, 58, SIZE / 2 + Math.sin(a) * 125);
     camera.lookAt(SIZE / 2, 14, SIZE / 2);
@@ -573,7 +641,7 @@ function frame(now) {
   U.uCam.value.copy(camera.position);
   const day = g.sky.update(g.t, g.time, camera, underwater);
   g.birds.update(dt, g.time, p, day);
-  g.felling.update(dt, p);
+  g.wood.draw3();
   g.particles.update(dt, day.light);
   const night = Math.max(0, Math.min(1, (day.night - 0.3) / 0.5));
   for (const b of g.beams) {

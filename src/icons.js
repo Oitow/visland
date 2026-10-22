@@ -1,7 +1,7 @@
 // Hotbar pictures, painted in code: a lump of each material with its grain, and a little lantern.
 import { latticeRandom } from '../vendor/almanac/noise.js';
 import { hexToRgb } from '../vendor/almanac/colour.js';
-import { MATERIALS, LANTERN, AXE } from './materials.js';
+import { MATERIALS, LANTERN, AXE, PICK } from './materials.js';
 
 export function drawItemIcon(ctx, item, size) {
   const px = size / 16;
@@ -14,6 +14,17 @@ export function drawItemIcon(ctx, item, size) {
     // the haft on a diagonal, the head at its top
     for (let i = 2; i < 14; i++) put(i, 15 - i, i % 3 ? [150, 104, 62] : [128, 88, 52]);
     for (let y = 1; y < 7; y++) for (let x = 9; x < 15; x++) if (x + y > 12 && x - y < 12) put(x, y, x > 12 ? [226, 230, 234] : [150, 157, 164]);
+    return;
+  }
+  if (item === PICK) {
+    // the haft on a diagonal, a curved iron head across its top
+    for (let i = 3; i < 15; i++) put(i, 16 - i, i % 3 ? [150, 104, 62] : [128, 88, 52]);
+    for (let k = -6; k <= 6; k++) {
+      const x = 11 + k * 0.7,
+        y = 4 + k * 0.7 + Math.abs(k) * 0.35;
+      put(Math.round(x), Math.round(y), Math.abs(k) > 4 ? [226, 230, 234] : [150, 157, 164]);
+      if (Math.abs(k) < 5) put(Math.round(x) - 1, Math.round(y), [120, 126, 132]);
+    }
     return;
   }
   if (item === LANTERN) {

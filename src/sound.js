@@ -121,6 +121,12 @@ export class Sound {
     this.burst(2500, 1.2, 0.35, 0.5);
   }
 
+  // iron on stone
+  clang() {
+    this.tone('triangle', 1900, 1500, 0.3, 0.25);
+    this.burst(4200, 0.08, 0.5, 3);
+  }
+
   rustle() {
     this.burst(3000, 0.4, 0.4, 0.5);
   }

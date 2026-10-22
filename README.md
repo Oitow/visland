@@ -24,20 +24,28 @@ Höhle, der Rest irgendwo dazwischen. Nachts steht über jedem noch nicht gefund
 | Laufen           | linker Daumen (Joystick)     | WASD oder Pfeiltasten       |
 | Schauen          | rechts wischen               | Maus (erst ins Bild klicken) |
 | Springen/Schwimmen | ⤒                          | Leertaste                   |
-| Graben; am Baum: mit der Axt hacken; einsammeln | ⛏ (gedrückt halten) | Linksklick |
+| Zuschlagen (Werkzeug), sonst mit der Hand graben, Kristalle und Laternen aufheben | ⛏ (gedrückt halten) | Linksklick |
 | Material auftragen, Laterne setzen | ▣                    | Rechtsklick                 |
-| Material wählen  | Hotbar antippen              | 1–9 oder Mausrad            |
+| Werkzeug oder Material wählen | Hotbar antippen | 1–9 oder Mausrad            |
 | Menü             | ☰                            | ☰ oder M                    |
+
+**Werkzeuge:** Die **Axt** schlägt waagerecht auf Blickhöhe und schneidet Holz. An Stein prallt sie ab. Die
+**Spitzhacke** schlägt von oben bis vor die Füße und bricht Boden und Stein. Mit bloßen Händen gräbt man nur weichen
+Boden. Ein Schlag zählt nur, wenn die Klinge auf ihrem Weg wirklich etwas trifft. Schnell und quer zur Faser schneidet
+am tiefsten.
 
 Deine Änderungen an einer Insel werden im Browser gespeichert: nur die Grab- und Bau-Schritte, die Insel selbst
 wächst jedes Mal neu aus dem Seed.
 
 ## Wie das Gelände funktioniert
 
-Die Welt ist ein Raster aus Punkten im Meterabstand (160 × 64 × 160). Jeder Punkt speichert keinen Block, sondern
-eine **Dichte** (über 0 heißt Boden, unter 0 heißt Luft, ungefähr der Abstand zur Oberfläche) und ein Material.
+Die Welt ist ein Raster aus Punkten im Abstand von **0,5 m** (320 × 128 × 320). Jeder Punkt speichert keinen Block,
+sondern eine **Dichte** (über 0 heißt Boden, unter 0 heißt Luft, ungefähr der Abstand zur Oberfläche) und ein
+Material. Gespeichert wird in Blöcken von 8 m: Ein Block, der ganz Luft oder ganz Fels ist, ist nur eine Zahl, und
+die Dichte belegt ein Byte pro Punkt. So braucht die Insel rund 8 MB statt 52.
 
-- **Surface Nets** (`src/surfacenets.js`) machen daraus eine glatte Oberfläche: In jede Zelle, durch die die
+- **Surface Nets** (`src/surfacenets.js`) machen daraus eine glatte Oberfläche (nahe Teilstücke mit jedem Punkt, ferne
+  mit jedem zweiten): In jede Zelle, durch die die
   Oberfläche läuft, kommt ein Punkt, und Nachbarpunkte werden zu Vierecken verbunden. Normalen kommen aus dem
   Gefälle der Dichte, Farben werden zwischen Materialien weich gemischt, steile Hänge zeigen Erde oder Fels.
 - **Graben** zieht eine Kugel von der Dichte ab, **Bauen** fügt eine hinzu. Danach werden nur die betroffenen
@@ -68,11 +76,13 @@ Rinde, hängende Zweige), **Kiefer** (Astquirle in Etagen), **Palme** (geringelt
 Kokosnüsse), **Schirmakazie** (flache Krone) und **Büsche**. Die Rinde sind Röhren mit Wurzeln am Fuß, das Laub sind
 Blattbüschel mit einer im Code gemalten Blatt-Textur (`leafAtlas` in `src/flora.js`). Alles wiegt sich im Wind.
 
-**Fällen** (`src/felling.js`): Mit der Axt in der Hand vor dem Stamm hacken. Jeder Hieb schlägt die Kerbe auf
-deiner Seite tiefer, Späne fliegen, der Baum zittert. Dicke Stämme brauchen mehr Hiebe (3 bis 7). Ist der Schnitt
-durch, knarrt der Baum und kippt von dir weg, erst langsam, dann immer schneller, wie ein umgedrehtes Pendel. Er
-schlägt auf, wirft Blätter und Staub auf und verschwindet dann. Wo er lag, bleiben Holzstämme, die du durch
-Darüberlaufen aufsammelst. Der Stumpf mit Jahresringen bleibt stehen; zwei weitere Hiebe räumen ihn weg.
+**Holz schneiden** (`src/wood.js`): Jeder Baum ist ein Skelett aus Röhren, und jeder Ast weiß, woran er hängt. Ein
+Hieb schneidet genau dort eine Kerbe, wo er trifft: am Stamm, an einem Ast, an einem liegenden Stück. Dünnes Holz geht
+schneller durch als dickes. Ist ein Schnitt durch, löst sich alles dahinter (der Rest des Astes, was daran wächst,
+sein Laub) als eigener **Physik-Körper** (Rapier, `src/physics.js`). Er fällt, rollt, schwimmt im Wasser und bleibt
+liegen. Ein am Fuß gekappter Stamm kippt von der Kerbe weg. Abgetrennte Stücke lassen sich weiter zerteilen. Ihr
+Laub welkt nach einer Weile. Stücke bis 2,4 m Holz sammelst du durch Hinlaufen ein, größere müssen erst kleiner
+gehackt werden.
 
 ## Was woher kommt
 
@@ -82,7 +92,6 @@ Darüberlaufen aufsammelst. Der Stumpf mit Jahresringen bleibt stehen; zwei weit
 | Wälder, Steppen, Schneegrenze        | `fractalNoise`, `valueNoise`, `latticeRandom`              | `src/world.js`   |
 | Wo welche Baumart wächst             | `fractalNoise`, `valueNoise`, `latticeRandom`              | `src/world.js`   |
 | Äste, die sich biegen und wandern    | `valueNoise`, `SeededRandom`, `lerp`                       | `src/trees.js`   |
-| Zittern beim Hacken, Nachfedern beim Aufprall | `dampedSpring`                                    | `src/felling.js` |
 | 3D-Noise für Höhlen                  | `hash32` (gleiches Prinzip wie `valueNoise`, eine Dimension mehr) | `src/noise3.js` |
 | Farben der Materialien               | `hexToRgb`, `mixColour`                                    | `src/surfacenets.js` |
 | Tag und Nacht, Himmelsfarben         | `dayCycle`, `mixColour`                                    | `src/sky.js`     |
@@ -92,7 +101,7 @@ Darüberlaufen aufsammelst. Der Stumpf mit Jahresringen bleibt stehen; zwei weit
 | Lesbare Seeds                        | `seedOf`, `seedWords`, `SeededRandom`                      | `src/main.js`    |
 
 Eigener Code im Spiel: 3D-Baumgenerator (`src/trees.js`, nach den Verzweigungsmodellen aus *The Algorithmic
-Beauty of Plants*, auf denen auch der Almanac aufbaut), Fällen mit Physik (`src/felling.js`), Partikel
+Beauty of Plants*, auf denen auch der Almanac aufbaut), Holz schneiden mit Physik (`src/wood.js`, `src/physics.js`), Werkzeug-Schwünge (`src/tools.js`), Partikel
 (`src/particles.js`), Surface-Nets-Mesher mit Ambient Occlusion (`src/surfacenets.js`), Shader für Gelände
 (Körnung, Kaustiken unter Wasser, Laternenlicht pro Pixel), Gras, Bäume, Wasser, Himmel und Wolken
 (`src/shaders.js`), Physik auf glattem Boden und Blickstrahl (`src/player.js`), Steuerung für Touch und Maus

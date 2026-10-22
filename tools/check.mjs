@@ -120,7 +120,7 @@ for (const [deg, stays] of [
   const job = createJob((m) => got.push(m));
   const seed = seedOf('nebel-bucht-7');
   const t0 = performance.now();
-  job({ type: 'grow', gen: 1, seed, ops: [['d', 80, 18, 80, 1.25]], trees: [[3, 'stump']], focus: null });
+  job({ type: 'grow', gen: 1, seed, ops: [['d', 80, 18, 80, 1.25]], trees: [[3, 'gone'], [5, 'active']], focus: null });
   const world = got.find((m) => m.type === 'world');
   const grounds = got.filter((m) => m.type === 'ground').length,
     treeMeshes = got.filter((m) => m.type === 'trees').length;
@@ -130,7 +130,7 @@ for (const [deg, stays] of [
   page.brush(80, 18, 80, 1.25, false);
   const sent = new World(seed);
   sent.unpack(world.pack);
-  check(digest(page) === digest(sent) && world.trees[3].state === 'stump', 'the worker sends the same world the page would grow, with the saved changes');
+  check(digest(page) === digest(sent) && world.trees[3].state === 'gone' && world.trees[5].state === 'active', 'the worker sends the same world the page would grow, with the saved changes');
   got.length = 0;
   job({ type: 'brush', gen: 1, x: 40, y: 15, z: 40, r: 1.25, add: false, chunks: [[2, 2]] });
   job({ type: 'brush', gen: 0, x: 40, y: 15, z: 40, r: 1.25, add: false, chunks: [[2, 2]] });

@@ -61,7 +61,7 @@ export function growTree(kind, base, rng, seed) {
     const p0 = [base[0] + Math.cos(a) * trunk.r[0] * 0.4, base[1] + 0.35, base[2] + Math.sin(a) * trunk.r[0] * 0.4];
     const p1 = [p0[0] + Math.cos(a) * 0.35, base[1] + 0.12, p0[2] + Math.sin(a) * 0.35];
     const p2 = [p0[0] + Math.cos(a) * 0.75, base[1] - 0.15, p0[2] + Math.sin(a) * 0.75];
-    wood.push({ pts: [p0, p1, p2], r: [r0, r0 * 0.55, 0.03], depth: 1, root: true });
+    wood.push({ pts: [p0, p1, p2], r: [r0, r0 * 0.55, 0.03], depth: 1, root: true, parent: 0, at: 0 });
   }
   const segs = [];
   for (const w of wood)
@@ -76,7 +76,7 @@ export function growTree(kind, base, rng, seed) {
 
 // a branching broadleaf: each branch a bent tube, its children spiralling off along its upper part
 function branchy(sp, base, rng, seed, wood, leaves) {
-  const branch = (start, dir, len, r, depth) => {
+  const branch = (start, dir, len, r, depth, parent, at) => {
     const n = depth === 0 ? 6 : depth === 1 ? 4 : 3, // fewer bends in the thin twigs
       pts = [start],
       rs = [r];
@@ -90,9 +90,10 @@ function branchy(sp, base, rng, seed, wood, leaves) {
       pts.push(p);
       rs.push(lerp(r, r * sp.rK, i / n));
     }
-    wood.push({ pts, r: rs, depth });
+    const me = wood.length;
+    wood.push({ pts, r: rs, depth, parent, at });
     if (depth >= sp.levels - 1) {
-      leaves.push({ c: p, r: sp.leaf * rng.range(0.85, 1.15), flat: sp.flat ? 0.35 : 0.8 });
+      leaves.push({ c: p, r: sp.leaf * rng.range(0.85, 1.15), flat: sp.flat ? 0.35 : 0.8, on: me });
       return;
     }
     const kids = rng.int(sp.kids[0], sp.kids[1]);
@@ -104,13 +105,13 @@ function branchy(sp, base, rng, seed, wood, leaves) {
       const at = last ? n : Math.floor(lerp(n * 0.45, n - 1, k / Math.max(1, kids - 1)));
       const tilt = last ? rng.range(0.1, 0.3) : rng.range(sp.spread[0], sp.spread[1]);
       const out = turn(turn(d, side, tilt), d, phase + k * GOLDEN);
-      branch(pts[at], out, len * sp.lenK * rng.range(0.85, 1.1), rs[at] * (last ? 0.9 : 0.75), depth + 1);
+      branch(pts[at], out, len * sp.lenK * rng.range(0.85, 1.1), rs[at] * (last ? 0.9 : 0.75), depth + 1, me, at);
     }
     // a few leaves along the way on the outer branches, so the crown is full
-    if (depth === sp.levels - 2) leaves.push({ c: pts[Math.floor(n * 0.7)], r: sp.leaf * 0.75, flat: sp.flat ? 0.35 : 0.8 });
+    if (depth === sp.levels - 2) leaves.push({ c: pts[Math.floor(n * 0.7)], r: sp.leaf * 0.75, flat: sp.flat ? 0.35 : 0.8, on: me });
   };
   const lean = [rng.range(-0.08, 0.08), 1, rng.range(-0.08, 0.08)];
-  branch(base, norm(lean), rng.range(sp.len[0], sp.len[1]), rng.range(sp.r[0], sp.r[1]), 0);
+  branch(base, norm(lean), rng.range(sp.len[0], sp.len[1]), rng.range(sp.r[0], sp.r[1]), 0, -1, 0);
 }
 
 // a pine: one straight trunk with whorls of drooping branches, longer toward the foot, needles along each
@@ -123,7 +124,7 @@ function pine(base, rng, wood, leaves) {
     pts.push([base[0] + Math.sin(i * 0.9) * 0.05, base[1] + (h * i) / 6, base[2] + Math.cos(i * 0.7) * 0.05]);
     rs.push(lerp(r, 0.04, i / 6));
   }
-  wood.push({ pts, r: rs, depth: 0 });
+  wood.push({ pts, r: rs, depth: 0, parent: -1, at: 0 });
   let phase = rng.range(0, 6.28);
   for (let y = 2; y < h - 0.4; y += rng.range(0.55, 0.8)) {
     const f = (y - 2) / (h - 2); // 0 at the lowest whorl, 1 at the top
@@ -135,12 +136,13 @@ function pine(base, rng, wood, leaves) {
       const out = [Math.cos(a), 0.15, Math.sin(a)];
       const p1 = add(p0, mul(norm(out), len * 0.55)),
         p2 = add(add(p0, mul(norm(out), len)), [0, -len * 0.28, 0]);
-      wood.push({ pts: [p0, p1, p2], r: [0.06, 0.04, 0.02], depth: 2 });
-      leaves.push({ c: add(mul(p1, 0.4), mul(p2, 0.6)), r: len * 0.42 + 0.35, flat: 0.45, along: [p0, p2] });
+      const at = Math.min(5, Math.round((y / h) * 6));
+      wood.push({ pts: [p0, p1, p2], r: [0.06, 0.04, 0.02], depth: 2, parent: 0, at });
+      leaves.push({ c: add(mul(p1, 0.4), mul(p2, 0.6)), r: len * 0.42 + 0.35, flat: 0.45, along: [p0, p2], on: wood.length - 1 });
     }
     phase += GOLDEN;
   }
-  leaves.push({ c: [base[0], base[1] + h, base[2]], r: 0.7, flat: 1.2 });
+  leaves.push({ c: [base[0], base[1] + h, base[2]], r: 0.7, flat: 1.2, on: 0 });
 }
 
 // a palm: a ringed trunk that leans and bends, a crown of long feathered fronds, and coconuts
@@ -156,7 +158,7 @@ function palm(base, rng, wood, leaves) {
     pts.push([base[0] + Math.cos(a) * off, base[1] + h * t, base[2] + Math.sin(a) * off]);
     rs.push(lerp(0.3, 0.2, t));
   }
-  wood.push({ pts, r: rs, depth: 0, rings: true });
+  wood.push({ pts, r: rs, depth: 0, rings: true, parent: -1, at: 0 });
   const top = pts.at(-1);
   const n = 7 + rng.int(0, 2),
     a0 = rng.range(0, 6.28);
@@ -169,12 +171,12 @@ function palm(base, rng, wood, leaves) {
       const d = (i / 6) * len;
       line.push([top[0] + Math.cos(fa) * d, top[1] + 0.2 + d * rise - d * d * 0.17, top[2] + Math.sin(fa) * d]);
     }
-    leaves.push({ c: line[3], r: 1.4, frond: line });
+    leaves.push({ c: line[3], r: 1.4, frond: line, on: 0 });
   }
   const nuts = rng.int(2, 4);
   for (let k = 0; k < nuts; k++) {
     const na = rng.range(0, 6.28);
-    leaves.push({ c: [top[0] + Math.cos(na) * 0.28, top[1] - 0.25, top[2] + Math.sin(na) * 0.28], r: 0.17, nut: true });
+    leaves.push({ c: [top[0] + Math.cos(na) * 0.28, top[1] - 0.25, top[2] + Math.sin(na) * 0.28], r: 0.17, nut: true, on: 0 });
   }
 }
 
@@ -182,6 +184,6 @@ function palm(base, rng, wood, leaves) {
 export function growBush(base, rng) {
   const leaves = [];
   const n = rng.int(2, 4);
-  for (let k = 0; k < n; k++) leaves.push({ c: [base[0] + rng.range(-0.5, 0.5), base[1] + rng.range(0.3, 0.6), base[2] + rng.range(-0.5, 0.5)], r: rng.range(0.6, 0.9), flat: 0.7 });
+  for (let k = 0; k < n; k++) leaves.push({ c: [base[0] + rng.range(-0.5, 0.5), base[1] + rng.range(0.3, 0.6), base[2] + rng.range(-0.5, 0.5)], r: rng.range(0.6, 0.9), flat: 0.7, on: -1 });
   return { kind: 'bush', x: base[0], y: base[1], z: base[2], wood: [], leaves, segs: [], balls: [], height: 1, crown: base };
 }

@@ -71,24 +71,19 @@ export class Player {
       const pen = R - s.dist;
       if (pen > 0 && (!best || pen > best.pen)) best = { pen, n: s.n, ground: true };
     }
-    for (const tr of this.near) {
-      const top = tr.state === 'stump' ? tr.cutY : Infinity;
+    // trunks, thick branches and fallen pieces: pushed out of each, the way out from its middle line
+    for (const tr of this.near)
       for (const s of tr.segs) {
-        if (!s.trunk || Math.min(s.a[1], s.b[1]) > top) continue;
-        const b = s.b[1] > top ? [s.a[0] + ((s.b[0] - s.a[0]) * (top - s.a[1])) / (s.b[1] - s.a[1]), top, s.a[2] + ((s.b[2] - s.a[2]) * (top - s.a[1])) / (s.b[1] - s.a[1])] : s.b;
+        if (!s.trunk) continue;
         for (const h of BALLS) {
           const c = [x, y + h, z],
-            q = nearestOnSeg(c, s.a, b);
-          // trunks push only sideways (a stump's top is stood on like ground)
-          const dx = c[0] - q[0],
-            dz = c[2] - q[2],
-            dl = Math.hypot(dx, dz) || 1e-6;
-          const dy = c[1] - q[1];
-          const pen = R + s.r - Math.hypot(dl, dy);
-          if (pen > 0 && (!best || pen > best.pen)) best = dy > 0.05 && h === R && tr.state === 'stump' ? { pen, n: [0, 1, 0] } : { pen, n: [dx / dl, 0, dz / dl] };
+            q = nearestOnSeg(c, s.a, s.b);
+          const d = [c[0] - q[0], c[1] - q[1], c[2] - q[2]],
+            dl = Math.hypot(...d) || 1e-6;
+          const pen = R + s.r - dl;
+          if (pen > 0 && (!best || pen > best.pen)) best = { pen, n: [d[0] / dl, d[1] / dl, d[2] / dl] };
         }
       }
-    }
     return best;
   }
 
@@ -100,7 +95,8 @@ export class Player {
   }
 
   nearTrees(x, z) {
-    return this.world.trees.filter((t) => (t.state === 'standing' || t.state === 'chopping' || t.state === 'stump') && Math.abs(t.x - x) < 4 && Math.abs(t.z - z) < 4);
+    const trees = this.world.trees.filter((t) => (t.state === 'standing' || t.state === 'active') && Math.abs(t.x - x) < 6 && Math.abs(t.z - z) < 6);
+    return this.extra ? trees.concat(this.extra(x, z)) : trees;
   }
 
   // push the body out of whatever it is in, a few times over (one push can lead into another)
@@ -231,11 +227,10 @@ export class Player {
     for (const c of w.crystals) if (!c.found && near(c.x, c.z, 1)) things.push({ kind: 'crystal', thing: c, balls: [[c.x, c.y + 0.6, c.z, 0.7]] });
     for (const l of w.lanterns) if (near(l[0], l[2], 1)) things.push({ kind: 'lantern', thing: l, balls: [[l[0], l[1] + 0.6, l[2], 0.5]] });
     for (const t of w.trees) {
-      if (!near(t.x, t.z, 7)) continue;
-      if (t.state === 'standing' || t.state === 'chopping')
-        things.push({ kind: 'tree', thing: t, balls: t.leaves.filter((l) => !l.nut).map((l) => [...l.c, l.r * 0.8]), segs: t.segs });
-      else if (t.state === 'stump') things.push({ kind: 'tree', thing: t, balls: [[t.x, t.y + 0.3, t.z, t.wood[0].r[0] + 0.25]] });
+      if (!near(t.x, t.z, 7) || (t.state !== 'standing' && t.state !== 'active')) continue;
+      things.push({ kind: 'tree', thing: t, balls: t.leaves.filter((l) => !l.nut && !l.gone).map((l) => [...l.c, l.r * 0.8]), segs: t.segs });
     }
+    for (const p of this.extra ? this.extra(this.x, this.z) : []) things.push({ kind: 'piece', thing: p.piece, balls: [], segs: p.segs });
     let prev = 0;
     for (let t = 0.05; t <= reach; t += 0.05) {
       const p = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];

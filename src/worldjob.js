@@ -48,7 +48,7 @@ export function createJob(post) {
       for (const [kind, x, y, z, r, mat] of m.ops) world.brush(x, y, z, r, kind === 'b', mat);
       for (const e of m.trees) {
         const [id, state] = Array.isArray(e) ? e : [e, 'gone']; // an older save lists only trees that are gone
-        if (world.trees[id]) Object.assign(world.trees[id], { state, cutY: world.trees[id].y + 0.55 });
+        if (world.trees[id]) world.trees[id].state = state === 'active' ? 'active' : 'gone'; // (an older 'stump' is gone)
       }
       treesIn.clear();
       for (const t of world.trees) {
@@ -86,7 +86,6 @@ export function createJob(post) {
       const t = world.trees[m.id];
       if (!t) return;
       t.state = m.state;
-      if (m.cutY !== undefined) t.cutY = m.cutY;
       trees(Math.floor(t.x / CHUNK), Math.floor(t.z / CHUNK));
     }
   };

@@ -75,7 +75,7 @@ class Builder {
  * A bark tube along points, a radius at each. `look(i, k, around)` gives each corner's colour; `dent(p, around)`
  * pushes a corner in (the axe's notch) and returns how far.
  */
-function tube(b, pts, rs, sides, look, swayOf, dent = null) {
+function tube(b, pts, rs, sides, look, swayOf, dent = null, ss = null) {
   let u = across(norm(sub(pts[1], pts[0])));
   const rings = [];
   for (let i = 0; i < pts.length; i++) {
@@ -89,7 +89,7 @@ function tube(b, pts, rs, sides, look, swayOf, dent = null) {
       let p = add(pts[i], mul(n, rs[i]));
       let cut = 0;
       if (dent) {
-        cut = dent(pts[i], n, rs[i]);
+        cut = dent(pts[i], n, rs[i], ss ? ss[i] : 0);
         p = sub(p, mul(n, cut));
       }
       ring.push({ p, n, c: cut > 0.02 ? FRESH : look(i, k % sides, a), s: swayOf(p) });
@@ -141,47 +141,28 @@ function barkLook(tree, depth) {
   };
 }
 
-// the trunk's points made dense near the foot, so a notch has room to show
-function denseTrunk(w, upTo) {
+// a tube's points between two distances along it (metres from its foot), with extra rings round every cut so a
+// notch has room to show; returns the points, their radii, and each one's distance along the tube
+function along(w, from, to, cuts) {
+  const L = [0];
+  for (let i = 1; i < w.pts.length; i++) L.push(L[i - 1] + Math.hypot(...sub(w.pts[i], w.pts[i - 1])));
+  const at = (s) => {
+    let i = 0;
+    while (i < L.length - 2 && L[i + 1] < s) i++;
+    const f = Math.max(0, Math.min(1, (s - L[i]) / (L[i + 1] - L[i] || 1)));
+    return [add(w.pts[i], mul(sub(w.pts[i + 1], w.pts[i]), f)), w.r[i] + (w.r[i + 1] - w.r[i]) * f];
+  };
+  const stops = new Set([from, to, ...L.filter((s) => s > from && s < to)]);
+  for (const c of cuts) for (const o of [-0.3, -0.18, -0.09, 0, 0.09, 0.18, 0.3]) if (c.s + o > from && c.s + o < to) stops.add(c.s + o);
+  const ss = [...stops].sort((a, b) => a - b);
   const pts = [],
     rs = [];
-  for (let i = 0; i < w.pts.length - 1; i++) {
-    const a = w.pts[i],
-      b = w.pts[i + 1];
-    const steps = a[1] < upTo ? Math.max(1, Math.ceil((b[1] - a[1]) / 0.12)) : 1;
-    for (let s = 0; s < steps; s++) {
-      const t = s / steps;
-      pts.push(add(a, mul(sub(b, a), t)));
-      rs.push(w.r[i] + (w.r[i + 1] - w.r[i]) * t);
-    }
+  for (const s of ss) {
+    const [p, r] = at(s);
+    pts.push(p);
+    rs.push(r);
   }
-  pts.push(w.pts.at(-1));
-  rs.push(w.r.at(-1));
-  return { pts, rs };
-}
-
-// a trunk cut at height cutY: the part under it, or the part above it
-function cutTrunk(w, cutY, upper) {
-  const { pts, rs } = denseTrunk(w, cutY + 2);
-  const out = [],
-    outR = [];
-  for (let i = 0; i < pts.length; i++) if (upper ? pts[i][1] > cutY : pts[i][1] < cutY) (out.push(pts[i]), outR.push(rs[i]));
-  // the point exactly at the cut
-  for (let i = 0; i < pts.length - 1; i++)
-    if ((pts[i][1] - cutY) * (pts[i + 1][1] - cutY) <= 0) {
-      const t = (cutY - pts[i][1]) / (pts[i + 1][1] - pts[i][1] || 1);
-      const p = add(pts[i], mul(sub(pts[i + 1], pts[i]), t)),
-        r = rs[i] + (rs[i + 1] - rs[i]) * t;
-      if (upper) {
-        out.unshift(p);
-        outR.unshift(r);
-      } else {
-        out.push(p);
-        outR.push(r);
-      }
-      break;
-    }
-  return { pts: out, rs: outR };
+  return { pts, rs, ss, length: L.at(-1) };
 }
 
 // the cards of one cluster of leaves
@@ -278,64 +259,62 @@ function treeTint(tree) {
 }
 
 /**
- * The meshes of a tree, in world coordinates.
- * @param {object} tree from trees.js (with id and state)
- * @param {{part?: 'whole'|'stump'|'upper', notch?: {dir: number[], y: number, depth: number}}} [o]
- * @returns {{wood: Builder, leaves: Builder}}
+ * The meshes of a tree or a piece of one, in its own coordinates. Each tube may be gone (cut away), may start or end
+ * at a cut (from, to: metres along it, shown with growth rings), and may carry notches {s, depth, dir}.
+ * @param {{kind, id, y, height, crown, wood: object[], leaves: object[]}} tree
+ * @param {{sway?: boolean}} [o] sway: the tree stands rooted and moves in the wind (a fallen piece does not)
  */
 function buildTree(tree, wb, lb, o = {}) {
-  const part = o.part || 'whole';
   const rng = new SeededRandom(tree.id * 131 + 7);
+  const sway = o.sway !== false;
   const swayOf = (p) => {
+    if (!sway) return 0;
     const h = Math.max(0, (p[1] - tree.y) / Math.max(1, tree.height));
-    return part === 'whole' ? h * h * 0.9 : 0;
+    return h * h * 0.9;
   };
-  const cutY = tree.cutY ?? tree.y + 0.55;
   for (const w of tree.wood) {
+    if (w.gone) continue;
     const look = barkLook(tree, w.depth);
     const sides = w.depth === 0 ? 10 : w.depth === 1 ? 6 : w.depth === 2 ? 4 : 3;
-    if (w.depth === 0 && part !== 'whole') {
-      const { pts, rs } = cutTrunk(w, cutY, part === 'upper');
-      if (pts.length > 1) tube(wb, pts, rs, sides, look, swayOf);
-      // the cut face
-      const r = rs[part === 'upper' ? 0 : rs.length - 1];
-      const at = pts[part === 'upper' ? 0 : pts.length - 1];
-      if (at) rings(wb, at, part === 'upper' ? [0, -1, 0] : [0, 1, 0], r);
+    const cuts = w.cuts || [];
+    if (w.from === undefined && w.to === undefined && !cuts.length) {
+      tube(wb, w.pts, w.r, sides, look, swayOf);
       continue;
     }
-    if (part === 'stump' && !w.root) continue;
-    if (part === 'upper' && w.root) continue;
-    if (w.depth === 0 && o.notch) {
-      // the notch: a wedge cut into the side the axe comes from, deeper with every blow
-      const { pts, rs } = denseTrunk(w, o.notch.y + 1);
-      const toward = mul(o.notch.dir, -1);
-      const dent = (p, n, r) => {
-        const v = Math.max(0, 1 - Math.abs(p[1] - o.notch.y) / 0.22);
-        const facing = Math.max(0, dot([n[0], 0, n[2]], toward));
-        return r * 0.95 * o.notch.depth * v * Math.sqrt(facing);
-      };
-      tube(wb, pts, rs, sides, look, swayOf, dent);
-      continue;
-    }
-    tube(wb, w.pts, w.r, sides, look, swayOf);
+    const total = along(w, 0, Infinity, []).length;
+    const { pts, rs, ss } = along(w, w.from || 0, Math.min(w.to ?? total, total), cuts);
+    if (pts.length < 2) continue;
+    // notches: wedges cut into the side each blow came from, as deep as the blows so far
+    const dent = cuts.length
+      ? (p, n, r, s) => {
+          let cut = 0;
+          for (const c of cuts) {
+            const v = Math.max(0, 1 - Math.abs(s - c.s) / 0.22);
+            const facing = Math.max(0, dot(n, c.dir));
+            cut = Math.max(cut, r * 0.95 * Math.min(1, c.depth) * v * Math.sqrt(facing));
+          }
+          return cut;
+        }
+      : null;
+    tube(wb, pts, rs, sides, look, swayOf, dent, ss);
+    // where the tube was cut through, its end shows the wood's rings
+    const dirAt = (i, j) => norm(sub(pts[j], pts[i]));
+    if (w.from > 0) rings(wb, pts[0], dirAt(1, 0), rs[0]);
+    if (w.to !== undefined && w.to < total) rings(wb, pts.at(-1), dirAt(pts.length - 2, pts.length - 1), rs.at(-1));
   }
-  if (part === 'stump') return;
   const tint = treeTint(tree);
-  for (const l of tree.leaves) leafCards(lb, tree, l, tint, swayOf, rng);
+  for (const l of tree.leaves) if (!l.gone) leafCards(lb, tree, l, tint, swayOf, rng);
 }
 
-/** The meshes of every tree in a list (one chunk's): standing trees whole, felled ones as stumps. */
+/** The meshes of every standing, untouched tree in a list (one chunk's); trees being cut are drawn on their own. */
 export function treesGeometry(trees) {
   const wb = new Builder(),
     lb = new Builder();
-  for (const t of trees) {
-    if (t.state === 'standing') buildTree(t, wb, lb);
-    else if (t.state === 'stump') buildTree(t, wb, lb, { part: 'stump' });
-  }
+  for (const t of trees) if (t.state === 'standing') buildTree(t, wb, lb);
   return { wood: wb.geometry(), leaves: lb.geometry() };
 }
 
-/** One tree on its own (being chopped, or falling): whole with its notch, or the part above the cut. */
+/** One tree on its own (rooted, being cut) or a piece cut from one (fallen, not swaying). */
 export function singleTreeGeometry(tree, o) {
   const wb = new Builder(),
     lb = new Builder();
@@ -407,6 +386,16 @@ export function axeGeometry() {
   b.flat(neck(1, true), e(4, -1), neck(-1, true), iron);
   b.flat(neck(1, false), neck(-1, false), e(0, -1), iron);
   b.flat(neck(1, false), e(0, -1), e(0, 1), iron);
+  return b.geometry();
+}
+
+/** The pickaxe held in the hand: a haft along y and a curved iron head across its top, pointed both ways. */
+export function pickGeometry() {
+  const b = new Builder();
+  tube(b, [[0, -0.32, 0], [0, 0, 0], [0, 0.3, 0]], [0.022, 0.024, 0.026], 6, (i, k) => rgb(k % 2 ? '#8a5f37' : '#9b6c40'), () => 0);
+  const iron = (i) => rgb(i === 2 ? '#e2e6ea' : '#9aa1a8');
+  for (const side of [-1, 1])
+    tube(b, [[0, 0.3, 0], [side * 0.13, 0.31, 0], [side * 0.27, 0.25, 0]], [0.034, 0.024, 0.005], 5, (i) => iron(i), () => 0);
   return b.geometry();
 }
 
