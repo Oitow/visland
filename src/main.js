@@ -4,8 +4,8 @@ import * as THREE from 'three';
 import { seedOf, seedWords } from '../vendor/almanac/seeds.js';
 import { World, SIZE, CHUNK, WATER_Y, SEA } from './world.js';
 import { STONE, DIRT, WOOD, LANTERN, AXE, DROP, itemName } from './materials.js';
-import { meshChunk } from './surfacenets.js';
-import { treesGeometry, crystalMesh, lanternMesh, tuftGeometry, leafAtlas, axeGeometry } from './flora.js';
+import { tuftGeometry, axeGeometry } from './flora.js';
+import { geo, crystalMesh, lanternMesh, leafAtlas } from './meshes.js';
 import { terrainMaterial, woodMaterial, leafMaterial, tuftMaterial, glowMaterial, U } from './shaders.js';
 import { Felling } from './felling.js';
 import { SPECIES } from './trees.js';
@@ -13,7 +13,7 @@ import { Particles } from './particles.js';
 import { Sky } from './sky.js';
 import { Water } from './water.js';
 import { Birds } from './birds.js';
-import { Player } from './player.js';
+import { Player, STEP } from './player.js';
 import { Input } from './input.js';
 import { UI } from './ui.js';
 import { Sound } from './sound.js';
@@ -51,7 +51,7 @@ const leafMat = leafMaterial(leafAtlas());
 const tuftMat = tuftMaterial();
 const glowMat = glowMaterial();
 const lanternGlow = new THREE.MeshBasicMaterial({ color: 0xffd27a });
-const tuftGeos = { 2: tuftGeometry('#3f7f2c', '#9fd060'), 6: tuftGeometry('#8a7a36', '#e2cc78') };
+const tuftGeos = { 2: geo(tuftGeometry('#3f7f2c', '#9fd060')), 6: geo(tuftGeometry('#8a7a36', '#e2cc78')) };
 
 // the ring that shows where a dig or a build will land
 const ring = new THREE.Mesh(
@@ -68,7 +68,7 @@ const axeMat = woodMaterial();
 axeMat.depthTest = false; // always in front, never into a wall
 axeMat.side = THREE.DoubleSide;
 const axe = new THREE.Group();
-const axeMesh = new THREE.Mesh(axeGeometry(), axeMat);
+const axeMesh = new THREE.Mesh(geo(axeGeometry()), axeMat);
 axeMesh.rotation.set(0, Math.PI / 2 + 0.55, 0); // the blade forward and a little to the left, as it is held
 axeMesh.renderOrder = 100;
 axe.add(axeMesh);
@@ -101,19 +101,61 @@ function disposeIsland() {
   game = null;
 }
 
+// --- the worker: the island grows and is meshed there (worldjob.js); this page keeps a copy to walk and dig on ---
+
+let gen = 0; // which island the worker's answers are for
+let growing = null; // { name, gen, saved, resolve, promise }
+const toWorker = (() => {
+  // what has been asked since the last island was grown, so the page can do it all itself if the worker fails
+  let sent = [];
+  let local = null;
+  const onPage = () => {
+    if (local) return;
+    console.warn('Visland: no worker here; the island is grown on the page');
+    local = import('./worldjob.js').then(({ createJob }) => createJob((msg) => setTimeout(() => fromWorker(msg))));
+    for (const m of sent) local.then((handle) => handle(m));
+  };
+  let worker = null;
+  try {
+    worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = (e) => fromWorker(e.data);
+    worker.onerror = onPage;
+  } catch {
+    onPage();
+  }
+  return (m) => {
+    if (m.type === 'grow') sent = [];
+    sent.push(m);
+    if (local) local.then((handle) => handle(m));
+    else worker.postMessage(m);
+  };
+})();
+
+/** Ask for an island; the promise is kept when its world has arrived (its meshes follow, nearest first). */
 function growIsland(name) {
+  if (growing?.name === name) return growing.promise;
   disposeIsland();
   const seed = seedOf(name);
-  const world = new World(seed);
-  world.generate();
   const saved = store.load(seed);
-  // the player's changes, laid again over the island as it grew
-  for (const [kind, x, y, z, r, m] of saved?.ops || []) world.brush(x, y, z, r, kind === 'b', m);
-  // felled trees: [id, 'stump' | 'gone'] (an older save lists only the ids of trees that are gone)
-  for (const e of saved?.trees || []) {
-    const [id, state] = Array.isArray(e) ? e : [e, 'gone'];
-    if (world.trees[id]) Object.assign(world.trees[id], { state, cutY: world.trees[id].y + 0.55 });
-  }
+  gen++;
+  growing = { name, seed, saved, gen };
+  growing.promise = new Promise((resolve) => (growing.resolve = resolve));
+  toWorker({ type: 'grow', gen, seed, ops: saved?.ops || [], trees: saved?.trees || [], focus: saved?.pos || null });
+  return growing.promise;
+}
+
+function fromWorker(m) {
+  if (m.gen !== gen) return; // an answer for an island already left
+  if (m.type === 'world') onWorld(m);
+  else if (!game) return;
+  else if (m.type === 'ground') applyGround(game, m.cx, m.cz, m.mesh);
+  else if (m.type === 'trees') applyTrees(game, m.cx, m.cz, m);
+}
+
+function onWorld(m) {
+  const { name, seed, saved } = growing;
+  const world = new World(seed);
+  Object.assign(world, { density: m.density, mat: m.mat, heights: m.heights, trees: m.trees, crystals: m.crystals, spawn: m.spawn });
   for (const id of saved?.found || []) if (world.crystals[id]) world.crystals[id].found = true;
   world.lanterns = saved?.lanterns || [];
   const g = {
@@ -132,7 +174,10 @@ function growIsland(name) {
     playing: false,
     saveTimer: 0,
   };
-  if (saved?.pos) [g.player.x, g.player.y, g.player.z, g.player.yaw, g.player.pitch] = saved.pos;
+  if (saved?.pos) {
+    g.player.place(saved.pos[0], saved.pos[1], saved.pos[2]);
+    [g.player.yaw, g.player.pitch] = [saved.pos[3], saved.pos[4]];
+  }
   if (!g.inv.some(([b]) => b === AXE)) g.inv.unshift([AXE, 1]);
   g.particles = new Particles(scene);
   g.felling = new Felling({
@@ -142,25 +187,14 @@ function growIsland(name) {
     sound,
     wood: woodMat,
     leaves: leafMat,
-    treeChanged: (t) => remeshTrees(g, Math.floor(t.x / CHUNK), Math.floor(t.z / CHUNK)),
+    treeChanged: (t) => toWorker({ type: 'tree', gen, id: t.id, state: t.state, cutY: t.cutY }),
     give: (n) => {
       give(WOOD, n);
       ui.nameShow(`+${n} Holz (${g.inv.find(([b]) => b === WOOD)[1]})`);
     },
     say: (s) => ui.nameShow(s),
   });
-  g.treesIn = new Map();
-  for (const t of world.trees) {
-    const k = Math.floor(t.x / CHUNK) + ',' + Math.floor(t.z / CHUNK);
-    if (!g.treesIn.has(k)) g.treesIn.set(k, []);
-    g.treesIn.get(k).push(t);
-  }
   game = g;
-  for (let cz = 0; cz < SIZE / CHUNK; cz++)
-    for (let cx = 0; cx < SIZE / CHUNK; cx++) {
-      remeshGround(g, cx, cz);
-      remeshTrees(g, cx, cz);
-    }
   for (const c of world.crystals) if (!c.found) addThing(g, c);
   for (const l of world.lanterns) addThing(g, l);
   g.water = new Water(scene, world);
@@ -183,6 +217,9 @@ function growIsland(name) {
   ui.seedLabel.textContent = name;
   updateCrystals();
   refreshHotbar();
+  const done = growing.resolve;
+  growing = null;
+  done(g);
 }
 
 function chunkOf(g, cx, cz) {
@@ -191,22 +228,15 @@ function chunkOf(g, cx, cz) {
   return g.chunks.get(k);
 }
 
-function remeshGround(g, cx, cz) {
-  if (cx < 0 || cz < 0 || cx >= SIZE / CHUNK || cz >= SIZE / CHUNK) return;
+// a chunk's ground as the worker meshed it
+function applyGround(g, cx, cz, data) {
   const c = chunkOf(g, cx, cz);
-  const data = meshChunk(g.world, cx, cz);
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(data.position, 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(data.normal, 3));
-  geo.setAttribute('aColor', new THREE.BufferAttribute(data.color, 3));
-  geo.setAttribute('aLight', new THREE.BufferAttribute(data.light, 3));
-  geo.setIndex(new THREE.BufferAttribute(data.index, 1));
-  geo.computeBoundingSphere();
+  const geometry = geo({ position: data.position, normal: data.normal, aColor: data.color, aLight: data.light, index: data.index });
   if (c.ground) {
     c.ground.geometry.dispose();
-    c.ground.geometry = geo;
+    c.ground.geometry = geometry;
   } else {
-    c.ground = new THREE.Mesh(geo, terrainMat);
+    c.ground = new THREE.Mesh(geometry, terrainMat);
     scene.add(c.ground);
   }
   // grass grows again where the mesh says there is open meadow: three tufts round each spot
@@ -236,20 +266,20 @@ function remeshGround(g, cx, cz) {
   }
 }
 
-function remeshTrees(g, cx, cz) {
+// a chunk's trees as the worker meshed them
+function applyTrees(g, cx, cz, data) {
   const c = chunkOf(g, cx, cz);
   for (const m of c.trees) {
     scene.remove(m);
     m.geometry.dispose();
   }
   c.trees = [];
-  const geo = treesGeometry(g.treesIn.get(cx + ',' + cz) || []);
-  for (const [gg, mat] of [
-    [geo.wood, woodMat],
-    [geo.leaves, leafMat],
+  for (const [arrays, mat] of [
+    [data.wood, woodMat],
+    [data.leaves, leafMat],
   ])
-    if (gg) {
-      const m = new THREE.Mesh(gg, mat);
+    if (arrays) {
+      const m = new THREE.Mesh(geo(arrays), mat);
       scene.add(m);
       c.trees.push(m);
     }
@@ -269,11 +299,13 @@ function removeThing(g, thing) {
   g.things.delete(thing);
 }
 
-// the ground changed in a ball: mesh again every chunk it (or a light it holds) reaches, and the sea's depth there
-function changed(x, y, z, r) {
+// the ground changed in a ball: the worker makes the same change to its copy and meshes again every chunk it reaches
+function changed(x, y, z, r, add, mat) {
   const g = game;
+  const chunks = [];
   for (let cx = Math.floor((x - r - 1) / CHUNK); cx <= Math.floor((x + r + 1) / CHUNK); cx++)
-    for (let cz = Math.floor((z - r - 1) / CHUNK); cz <= Math.floor((z + r + 1) / CHUNK); cz++) remeshGround(g, cx, cz);
+    for (let cz = Math.floor((z - r - 1) / CHUNK); cz <= Math.floor((z + r + 1) / CHUNK); cz++) chunks.push([cx, cz]);
+  toWorker({ type: 'brush', gen, x, y, z, r, add, mat, chunks });
   const w = Math.ceil(Math.min(r, 3));
   for (let dz = -w; dz <= w; dz++) for (let dx = -w; dx <= w; dx++) g.water.changed(Math.round(x) + dx, Math.round(z) + dz);
   g.saveTimer = Math.min(g.saveTimer, 1);
@@ -348,7 +380,7 @@ function dig() {
     // what was dug out: the material most of it was made of
     const [mat, n] = [...took].sort((a, b) => b[1] - a[1])[0];
     give(DROP[mat] || mat, Math.max(1, Math.round(n / 4)));
-    changed(x, y, z, DIG_R);
+    changed(x, y, z, DIG_R, false);
     sound.dig();
   }
 }
@@ -371,7 +403,7 @@ function build() {
     if (g.player.touches(c, BUILD_R)) return;
     w.brush(c[0], c[1], c[2], BUILD_R, true, slot[0]);
     g.ops.push(['b', c[0], c[1], c[2], BUILD_R, slot[0]]);
-    changed(c[0], c[1], c[2], BUILD_R);
+    changed(c[0], c[1], c[2], BUILD_R, true, slot[0]);
   }
   slot[1]--;
   sound.build();
@@ -409,16 +441,15 @@ function randomSeed() {
   return seedWords(FIRST, SECOND);
 }
 
-let pending = null;
+// grow an island in the background, the "growing" note showing until its world has arrived
 function startGrowing(name) {
-  clearTimeout(pending);
+  if (game?.name === name) return Promise.resolve(game);
   ui.loading.classList.remove('hidden');
-  // let the "growing" note show before the work starts
-  pending = setTimeout(() => {
-    pending = null;
-    if (game?.name !== name) growIsland(name);
-    ui.loading.classList.add('hidden');
-  }, 30);
+  const p = growIsland(name);
+  p.then(() => {
+    if (!growing) ui.loading.classList.add('hidden');
+  });
+  return p;
 }
 
 ui.seed.value = store.lastSeed() || randomSeed();
@@ -427,13 +458,11 @@ ui.dice.addEventListener('click', () => {
   startGrowing(ui.seed.value);
 });
 ui.seed.addEventListener('change', () => startGrowing(ui.seed.value.trim() || randomSeed()));
-ui.play.addEventListener('click', () => {
+ui.play.addEventListener('click', async () => {
   sound.start();
   const name = ui.seed.value.trim() || randomSeed();
-  clearTimeout(pending);
-  ui.loading.classList.add('hidden');
-  if (!game || game.name !== name) growIsland(name);
-  enterGame();
+  await startGrowing(name);
+  if (game?.name === name) enterGame();
 });
 ui.resume.addEventListener('click', () => {
   sound.start();
@@ -470,6 +499,7 @@ function enterGame() {
 // --- the loop -----------------------------------------------------------------------------------------------------
 
 let last = performance.now();
+let physicsClock = 0;
 let lastTarget = '';
 function frame(now) {
   requestAnimationFrame(frame);
@@ -486,8 +516,15 @@ function frame(now) {
     const [lx, ly] = input.takeLook();
     p.yaw -= lx;
     p.pitch = Math.max(-1.55, Math.min(1.55, p.pitch - ly));
-    p.update(dt, input.state(dt));
-    camera.position.set(p.x, p.eyeY, p.z);
+    // the physics in fixed steps (STEP), however long the frame was; the camera drawn between the last two
+    const wish = input.state(dt);
+    physicsClock = Math.min(physicsClock + dt, STEP * 6);
+    while (physicsClock >= STEP) {
+      p.update(STEP, wish);
+      physicsClock -= STEP;
+    }
+    const [cx, cy, cz] = p.drawn(physicsClock / STEP);
+    camera.position.set(cx, cy + (p.eyeY - p.y), cz);
     camera.rotation.set(p.pitch, p.yaw, 0);
     const hit = p.target();
     ring.visible = hit?.kind === 'ground';

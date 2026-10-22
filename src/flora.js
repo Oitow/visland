@@ -1,7 +1,7 @@
 // Meshes for what stands on the ground, all built in code: trees (from the shapes trees.js grows) as bark tubes and
 // cards of leaves, the notch an axe cuts, stumps with growth rings, logs, crystals, lanterns, grass and the axe.
-// The leaves' picture is painted here too, on a canvas: broad leaves, birch leaves, pine needles, a palm frond.
-import * as THREE from 'three';
+// Everything here is plain numbers (no three.js, no page), so it runs in the world's worker as well as on the page;
+// meshes.js turns the arrays into three.js geometry, and paints the leaves' picture.
 import { hexToRgb, mixColour } from '../vendor/almanac/colour.js';
 import { latticeRandom } from '../vendor/almanac/noise.js';
 import { SeededRandom } from '../vendor/almanac/random.js';
@@ -19,99 +19,20 @@ const norm = (a) => {
 };
 const across = (a) => norm(cross(a, Math.abs(a[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
 
+// an icosahedron's twenty faces, on the unit sphere
+const ICO = (() => {
+  const f = (1 + Math.sqrt(5)) / 2;
+  const v = [[-1, f, 0], [1, f, 0], [-1, -f, 0], [1, -f, 0], [0, -1, f], [0, 1, f], [0, -1, -f], [0, 1, -f], [f, 0, -1], [f, 0, 1], [-f, 0, -1], [-f, 0, 1]].map(norm);
+  const faces = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+  return faces.map((fc) => fc.map((i) => v[i]));
+})();
+
 const FRESH = rgb('#dcbc8a'); // freshly cut wood
 const RING = rgb('#b8915e');
 
 // --- the leaves' picture --------------------------------------------------------------------------------------------
 
 export const LEAF_TILES = { broad: 0, birch: 1, needles: 2, frond: 3 };
-
-/** The leaf atlas: four 128-pixel tiles, white leaves (the tree's colour is laid over them) on transparent ground. */
-export function leafAtlas() {
-  const T = 128,
-    c = document.createElement('canvas');
-  c.width = T * 4;
-  c.height = T;
-  const g = c.getContext('2d');
-  const rng = new SeededRandom(4242);
-  const shade = (k) => `rgb(${Math.round(255 * k)},${Math.round(255 * k)},${Math.round(255 * k)})`;
-  const leaf = (x, y, len, wid, a, k) => {
-    g.save();
-    g.translate(x, y);
-    g.rotate(a);
-    g.fillStyle = shade(k);
-    g.beginPath();
-    g.moveTo(0, 0);
-    g.quadraticCurveTo(wid, len * 0.45, 0, len);
-    g.quadraticCurveTo(-wid, len * 0.45, 0, 0);
-    g.fill();
-    g.strokeStyle = shade(k * 0.72);
-    g.lineWidth = 1;
-    g.beginPath();
-    g.moveTo(0, 1);
-    g.lineTo(0, len * 0.9);
-    g.stroke();
-    g.restore();
-  };
-  // broad leaves: a heap, denser and lighter toward the middle
-  for (let i = 0; i < 70; i++) {
-    const a = rng.range(0, 6.28),
-      d = Math.sqrt(rng.next()) * 48;
-    leaf(64 + Math.cos(a) * d, 64 + Math.sin(a) * d, rng.range(15, 22), rng.range(5, 8), rng.range(0, 6.28), rng.range(0.62, 1) * (1 - d / 160));
-  }
-  // birch: small round leaves, scattered thinner
-  for (let i = 0; i < 70; i++) {
-    const a = rng.range(0, 6.28),
-      d = Math.sqrt(rng.next()) * 52;
-    leaf(T + 64 + Math.cos(a) * d, 64 + Math.sin(a) * d, rng.range(9, 13), rng.range(4, 6), rng.range(0, 6.28), rng.range(0.7, 1));
-  }
-  // needles: twigs with needles in pairs along them
-  g.lineCap = 'round';
-  for (let i = 0; i < 16; i++) {
-    const x0 = 2 * T + rng.range(14, 114),
-      y0 = rng.range(14, 114),
-      a = rng.range(0, 6.28),
-      len = rng.range(24, 44);
-    g.strokeStyle = shade(0.55);
-    g.lineWidth = 2;
-    g.beginPath();
-    g.moveTo(x0, y0);
-    g.lineTo(x0 + Math.cos(a) * len, y0 + Math.sin(a) * len);
-    g.stroke();
-    g.lineWidth = 1.6;
-    for (let s = 2; s < len; s += 3)
-      for (const side of [-1, 1]) {
-        const px = x0 + Math.cos(a) * s,
-          py = y0 + Math.sin(a) * s,
-          na = a + side * 0.9;
-        g.strokeStyle = shade(rng.range(0.7, 1));
-        g.beginPath();
-        g.moveTo(px, py);
-        g.lineTo(px + Math.cos(na) * 9, py + Math.sin(na) * 9);
-        g.stroke();
-      }
-  }
-  // a palm frond: a rib down the middle, leaflets slanting out on both sides (v runs along the frond)
-  g.strokeStyle = shade(0.7);
-  g.lineWidth = 3;
-  g.beginPath();
-  g.moveTo(3 * T + 64, 0);
-  g.lineTo(3 * T + 64, T);
-  g.stroke();
-  g.lineWidth = 3;
-  for (let y = 2; y < T; y += 5)
-    for (const side of [-1, 1]) {
-      g.strokeStyle = shade(rng.range(0.72, 1));
-      g.beginPath();
-      g.moveTo(3 * T + 64, y);
-      g.lineTo(3 * T + 64 + side * rng.range(52, 62), y + 16);
-      g.stroke();
-    }
-  const tex = new THREE.CanvasTexture(c);
-  tex.magFilter = THREE.LinearFilter;
-  tex.minFilter = THREE.LinearMipmapLinearFilter;
-  return tex;
-}
 
 // --- building blocks ------------------------------------------------------------------------------------------------
 
@@ -137,16 +58,16 @@ class Builder {
     this.vert(b, n, color, s);
     this.vert(c, n, color, s);
   }
+  // the triangles as typed arrays, ready to send between threads (meshes.js makes them geometry)
   geometry() {
     if (!this.pos.length) return null;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
-    g.setAttribute('aColor', new THREE.Float32BufferAttribute(this.col, 3));
-    g.setAttribute('aSway', new THREE.Float32BufferAttribute(this.sway, 1));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    g.computeBoundingSphere();
-    return g;
+    return {
+      position: new Float32Array(this.pos),
+      normal: new Float32Array(this.nor),
+      aColor: new Float32Array(this.col),
+      aSway: new Float32Array(this.sway),
+      uv: new Float32Array(this.uv),
+    };
   }
 }
 
@@ -267,9 +188,8 @@ function cutTrunk(w, cutY, upper) {
 function leafCards(b, tree, leaf, tint, swayOf, rng) {
   if (leaf.nut) {
     // a coconut: a small brown ball
-    const g = new THREE.IcosahedronGeometry(leaf.r, 0).attributes.position;
-    for (let i = 0; i < g.count; i += 3) {
-      const p = [0, 1, 2].map((k) => [leaf.c[0] + g.getX(i + k), leaf.c[1] + g.getY(i + k), leaf.c[2] + g.getZ(i + k)]);
+    for (const tri of ICO) {
+      const p = tri.map((v) => add(leaf.c, mul(v, leaf.r)));
       b.flat(p[0], p[1], p[2], rgb('#6b4a2a', 0.9 + 0.2 * rng.next()), swayOf(leaf.c));
     }
     return;
@@ -491,7 +411,7 @@ export function axeGeometry() {
 }
 
 // a crystal: a cluster of long six-sided points, lit from inside
-export function crystalMesh(material, id) {
+export function crystalGeometry(id) {
   const rng = new SeededRandom(id * 977 + 3);
   const b = new Builder();
   const colors = [rgb('#8ef0ff'), rgb('#c58cff'), rgb('#e8fbff')];
@@ -513,11 +433,11 @@ export function crystalMesh(material, id) {
       b.flat(ring(t1), base, ring(t0), mul(c, 0.8));
     }
   }
-  return new THREE.Mesh(b.geometry(), material);
+  return b.geometry();
 }
 
-// a lantern: a short post with a glowing box on top (the glow is a separate, unlit material)
-export function lanternMesh(material, glowMaterial) {
+// a lantern's frame: a short post and a cap (the glowing box inside is added by meshes.js)
+export function lanternGeometry() {
   const b = new Builder();
   const wood = rgb('#4a3322');
   tube(b, [[0, -0.2, 0], [0, 0.55, 0]], [0.07, 0.06], 6, () => wood, () => 0);
@@ -538,12 +458,7 @@ export function lanternMesh(material, glowMaterial) {
   };
   box(-0.2, 0.55, -0.2, 0.2, 0.6, 0.2, wood);
   box(-0.22, 0.95, -0.22, 0.22, 1.02, 0.22, wood);
-  const g = new THREE.Group();
-  g.add(new THREE.Mesh(b.geometry(), material));
-  const core = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.36, 0.3), glowMaterial);
-  core.position.y = 0.77;
-  g.add(core);
-  return g;
+  return b.geometry();
 }
 
 // grass: a few thin blades, many copies placed by the ground's mesh

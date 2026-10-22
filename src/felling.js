@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { dampedSpring } from '../vendor/almanac/bodies.js';
 import { singleTreeGeometry, logGeometry } from './flora.js';
+import { geo } from './meshes.js';
 
 const FRESH = [0.86, 0.74, 0.54];
 const REACH = 2.6; // how near the trunk you must stand to chop it
@@ -83,16 +84,16 @@ export class Felling {
   // the tree on its own, with its notch as deep as the blows so far, pivoting at its foot
   rebuild(tree, c) {
     this.drop(c.group);
-    const geo = singleTreeGeometry(tree, { notch: { dir: c.dir, y: tree.cutY, depth: c.hits / c.need } });
-    c.group = this.groupOf(geo, [tree.x, tree.y, tree.z]);
+    const arrays = singleTreeGeometry(tree, { notch: { dir: c.dir, y: tree.cutY, depth: c.hits / c.need } });
+    c.group = this.groupOf(arrays, [tree.x, tree.y, tree.z]);
   }
 
-  groupOf(geo, pivot) {
+  groupOf(arrays, pivot) {
     const group = new THREE.Group();
     group.position.set(...pivot);
     for (const [g, m] of [
-      [geo.wood, this.wood],
-      [geo.leaves, this.leaves],
+      [geo(arrays.wood), this.wood],
+      [geo(arrays.leaves), this.leaves],
     ])
       if (g) {
         const mesh = new THREE.Mesh(g, m);
@@ -187,13 +188,13 @@ export class Felling {
     const r = t.wood[0].r[0] * 0.8,
       total = 3 + Math.round(t.height / 2),
       each = Math.max(1, Math.round(total / n));
-    const geo = logGeometry(1.1, r, t.kind);
+    const log = geo(logGeometry(1.1, r, t.kind));
     for (let i = 0; i < n; i++) {
       const d = 0.9 + i * (trunkLen / n);
       const x = f.pivot[0] + f.dir[0] * d,
         z = f.pivot[2] + f.dir[2] * d;
       const y = Math.max(this.world.surfaceY(x, z), 12.6) + r;
-      const mesh = new THREE.Mesh(i ? geo.clone() : geo, this.wood);
+      const mesh = new THREE.Mesh(i ? log.clone() : log, this.wood);
       mesh.position.set(x, y, z);
       mesh.rotation.y = -Math.atan2(f.dir[2], f.dir[0]) + (Math.random() - 0.5) * 0.5;
       this.scene.add(mesh);

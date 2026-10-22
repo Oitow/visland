@@ -46,21 +46,40 @@ for (const name of ['nebel-bucht-7', 'koralle-riff-3', 'sturm-kap-91', 'lava-kli
   check(moved > 1 && !a.solid(p.x, p.y + 0.5, p.z), `${name}: the player walks ${moved.toFixed(1)} m and is not inside the ground`);
 
   // walking straight at a tree trunk stops at its bark
-  const tree = a.trees.find((t) => t.kind === 'oak' || t.kind === 'pine' || t.kind === 'birch');
+  const tree = a.trees.find((t) => ['oak', 'pine', 'birch'].includes(t.kind) && [0.5, 1, 1.5, 2].every((d) => [-1, 0, 1].every((e) => Math.abs(a.surfaceY(t.x - d, t.z + e) - t.y) < 0.4)));
   if (tree) {
     const q = new Player(a);
-    Object.assign(q, { x: tree.x - 2, z: tree.z, y: a.surfaceY(tree.x - 2, tree.z) + 0.05, yaw: -Math.PI / 2, vy: 0 });
-    for (let i = 0; i < 120; i++) q.update(1 / 60, { x: 0, z: 1, jump: false });
-    // how near the body came to the bark, at its own height
+    q.place(tree.x - 2, a.surfaceY(tree.x - 2, tree.z) + 0.05, tree.z);
+    q.yaw = -Math.PI / 2;
+    // how near the body ever came to the bark, at its own height, walking at it for two seconds
     let gap = Infinity;
-    for (const s of tree.segs.filter((s) => s.trunk))
-      for (let h = q.y + 0.3; h <= q.y + 1.6; h += 0.1) {
-        const f = (h - s.a[1]) / (s.b[1] - s.a[1]);
-        if (f < 0 || f > 1) continue;
-        gap = Math.min(gap, Math.hypot(q.x - (s.a[0] + (s.b[0] - s.a[0]) * f), q.z - (s.a[2] + (s.b[2] - s.a[2]) * f)) - s.r);
-      }
-    check(gap > 0.25, `${name}: a ${tree.kind} trunk stops the player (${gap.toFixed(2)} m from the bark)`);
+    for (let i = 0; i < 120; i++) {
+      q.update(1 / 60, { x: 0, z: 1, jump: false });
+      for (const s of tree.segs.filter((s) => s.trunk))
+        for (let h = q.y + 0.3; h <= q.y + 1.6; h += 0.1) {
+          const f = (h - s.a[1]) / (s.b[1] - s.a[1]);
+          if (f < 0 || f > 1) continue;
+          gap = Math.min(gap, Math.hypot(q.x - (s.a[0] + (s.b[0] - s.a[0]) * f), q.z - (s.a[2] + (s.b[2] - s.a[2]) * f)) - s.r);
+        }
+    }
+    check(gap > 0.25 && gap < 0.4, `${name}: a ${tree.kind} trunk keeps the player out (at least ${gap.toFixed(2)} m from the bark)`);
   }
+
+  // the same walk at 20 and at 144 frames a second ends in the same place (the physics steps are fixed)
+  const walk = (fps) => {
+    const r = new Player(a);
+    let acc = 0;
+    for (let f = 0; f < fps * 2; f++) {
+      acc += 1 / fps;
+      while (acc >= 1 / 60) {
+        r.update(1 / 60, { x: 0.3, z: 1, jump: f === 5 });
+        acc -= 1 / 60;
+      }
+    }
+    return [r.x, r.y, r.z];
+  };
+  const [w20, w144] = [walk(20), walk(144)];
+  check(Math.hypot(w20[0] - w144[0], w20[1] - w144[1], w20[2] - w144[2]) < 0.2, `${name}: walking ends in the same place at 20 and 144 fps`);
 
   // digging under the player's feet takes ground away; building puts it back
   const [gx, gy, gz] = [p.x, p.y - 0.4, p.z];
@@ -68,6 +87,44 @@ for (const name of ['nebel-bucht-7', 'koralle-riff-3', 'sturm-kap-91', 'lava-kli
   check(took.size > 0 && !a.solid(gx, gy, gz), `${name}: digging takes ground away`);
   a.brush(gx, gy, gz, 1.1, true, 4);
   check(a.solid(gx, gy, gz), `${name}: building puts ground back`);
+}
+// slopes, on a made-up field: ground flatter than 50° is stood on, steeper ground is slid down
+for (const [deg, stays] of [
+  [25, true],
+  [40, true],
+  [62, false],
+]) {
+  const f = new World(1);
+  const k = Math.tan((deg * Math.PI) / 180);
+  for (let z = 0; z < SIZE; z++)
+    for (let x = 0; x < SIZE; x++)
+      for (let y = 0; y < 64; y++) f.density[f.idx(x, y, z)] = Math.max(-4, Math.min(4, (20 + (x - 80) * k - y) / Math.hypot(1, k)));
+  f.spawn = [80.5, 20.6 + 0.5 * k, 80.5];
+  const s = new Player(f);
+  for (let i = 0; i < 180; i++) s.update(1 / 60, { x: 0, z: 0, jump: false });
+  const moved = Math.hypot(s.x - 80.5, s.z - 80.5);
+  check(stays ? moved < 0.15 && s.onGround : moved > 0.5, `a ${deg}° slope ${stays ? 'is stood on' : 'is slid down'} (moved ${moved.toFixed(2)} m)`);
+}
+// the worker's job: an island grown, every chunk meshed, then meshed again where it is dug, the same as the page's copy
+{
+  const { createJob } = await import('../src/worldjob.js');
+  const got = [];
+  const job = createJob((m) => got.push(m));
+  const seed = seedOf('nebel-bucht-7');
+  const t0 = performance.now();
+  job({ type: 'grow', gen: 1, seed, ops: [['d', 80, 18, 80, 1.25]], trees: [[3, 'stump']], focus: null });
+  const world = got.find((m) => m.type === 'world');
+  const grounds = got.filter((m) => m.type === 'ground').length,
+    treeMeshes = got.filter((m) => m.type === 'trees').length;
+  check(world && grounds === 100 && treeMeshes === 100, `the worker grows an island and meshes all 100 chunks (${(performance.now() - t0).toFixed(0)} ms)`);
+  const page = new World(seed);
+  page.generate();
+  page.brush(80, 18, 80, 1.25, false);
+  check(page.density.every((v, i) => v === world.density[i]) && world.trees[3].state === 'stump', 'the worker sends the same world the page would grow, with the saved changes');
+  got.length = 0;
+  job({ type: 'brush', gen: 1, x: 40, y: 15, z: 40, r: 1.25, add: false, chunks: [[2, 2]] });
+  job({ type: 'brush', gen: 0, x: 40, y: 15, z: 40, r: 1.25, add: false, chunks: [[2, 2]] });
+  check(got.length === 1 && got[0].type === 'ground' && got[0].cx === 2, 'a dig is meshed again by the worker; one for an old island is ignored');
 }
 const { seedOf: so } = await import('../vendor/almanac/seeds.js');
 check(so('Nebel-Bucht-7 ') === so('nebel-bucht-7'), 'seeds ignore case and spaces at the ends');

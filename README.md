@@ -46,6 +46,19 @@ eine **Dichte** (über 0 heißt Boden, unter 0 heißt Luft, ungefähr der Abstan
   einer Linie, das ergibt Tunnel (`src/noise3.js`).
 - Bäume, Kristalle und Laternen sind eigene Objekte (`src/trees.js`, `src/flora.js`).
 
+## Physik und Engine
+
+- **Fester Takt:** Die Physik rechnet immer in Schritten von 1/60 Sekunde, egal wie schnell das Gerät zeichnet; das
+  Bild wird zwischen den letzten zwei Schritten weich eingeblendet. So fühlt sich das Spiel auf jedem Gerät gleich an.
+- **Kapsel gegen Dichtefeld** (`src/player.js`): Die Figur besteht aus vier übereinander liegenden Kugeln. Das
+  Dichtefeld sagt an jedem Punkt, wie weit die Oberfläche ungefähr ist (Wert geteilt durch die Stärke des Gefälles)
+  und in welche Richtung es hinaus geht. Jede Kugel wird genau so weit herausgedrückt, wie sie eingesunken ist.
+  Boden flacher als 50° trägt (man rutscht nicht), steilerer ist Wand oder Rutsche. An Wänden und Stämmen gleitet
+  man entlang, bergab bleibt man am Boden, und nach einer Kante darf man noch kurz springen.
+- **Web Worker** (`src/worker.js`, `src/worldjob.js`): Inselbau, Gelände- und Baum-Meshes laufen im Hintergrund.
+  Die Seite und der Worker halten je eine Kopie der Welt; jeder Grab- oder Bau-Schritt und jeder gefällte Baum geht
+  an beide. Die Teilstücke kommen nach Nähe zum Spieler an. Gibt es keinen Worker, macht die Seite die Arbeit selbst.
+
 ## Bäume
 
 Jeder Baum wächst in 3D aus seinem Seed (`src/trees.js`): Ein Ast teilt sich in Kinder, die im goldenen Winkel
@@ -89,7 +102,7 @@ geladen.
 ## Prüfen
 
 ```sh
-npm run check      # gleiche Seeds → gleiche Inseln, Kristalle, Startpunkt, Meshes, Graben, Laufen
+npm run check      # Inseln, Kristalle, Meshes, Graben, Laufen, Hänge, Stämme, Bildraten, Worker
 node tools/map.mjs nebel-bucht-7   # Insel als ASCII-Karte im Terminal
 ```
 

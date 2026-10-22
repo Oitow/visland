@@ -1,21 +1,34 @@
-// The player: an upright body 0.6 wide and 1.75 tall that walks up slopes, climbs small ledges, jumps and swims in
-// the smooth ground; and the ray from the eye that finds what is looked at (ground, a tree, a crystal, a lantern).
+// The player: a capsule 0.6 wide and 1.75 tall (four balls stacked) that walks, slides, jumps and swims on the smooth
+// ground; and the ray from the eye that finds what is looked at (ground, a tree, a crystal, a lantern).
+//
+// The physics runs in fixed steps of 1/60 s, whatever the frame rate. In each step the body moves, then is pushed out
+// of anything it sank into: the ground's field gives, at any point, about how far the surface is and which way is out
+// (its value over the length of its slope, and the slope's direction), so each ball is pushed out by exactly as much
+// as it is in. Ground flatter than 50° is stood on (pushed straight up, so you do not slide); steeper ground is a
+// wall or a slide.
 import { SIZE, HEIGHT, WATER_Y } from './world.js';
 
+export const STEP = 1 / 60; // one physics step
 const R = 0.3, // the body's radius
   TALL = 1.75,
-  EYE = 1.6;
+  EYE = 1.6,
+  BALLS = [R, 0.68, 1.07, TALL - R], // the balls' centres, above the feet
+  WALKABLE = Math.cos((50 * Math.PI) / 180), // the steepest ground that can be stood on
+  GRAVITY = 26,
+  JUMP = 8.2;
 
-// how far a point is from the segment a..b
-function segDist(p, a, b) {
+// how far a point is from the segment a..b, and the nearest point on it
+function nearestOnSeg(p, a, b) {
   const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
     ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
   const l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2] || 1;
   const t = Math.max(0, Math.min(1, (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / l2));
-  return Math.hypot(ap[0] - ab[0] * t, ap[1] - ab[1] * t, ap[2] - ab[2] * t);
+  return [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
 }
-
-const RING = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [Math.cos((k * Math.PI) / 4) * R, Math.sin((k * Math.PI) / 4) * R]);
+function segDist(p, a, b) {
+  const q = nearestOnSeg(p, a, b);
+  return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+}
 
 export class Player {
   constructor(world) {
@@ -28,51 +41,107 @@ export class Player {
     this.pitch = -0.1;
     this.onGround = false;
     this.inWater = false;
-    this.near = []; // trees close by, gathered each moment
+    this.airTime = 0; // how long since the feet last touched ground (a jump is still allowed just after a ledge)
+    this.near = []; // trees close by
+    this.prev = [this.x, this.y, this.z]; // where the last step began, for drawing in between steps
   }
 
   get eyeY() {
     return this.y + EYE;
   }
 
-  // whether the body, standing at (x, y, z), is inside the ground or a tree trunk (its feet not counted)
-  bodyHits(x, y, z) {
-    const w = this.world;
-    for (const h of [0.4, 0.95, 1.55])
-      for (const [dx, dz] of RING) if (w.solid(x + dx, y + h, z + dz)) return true;
-    // trunks (and stumps, up to where they were cut): at three heights of the body, how far from the trunk's middle
+  // the ground near a point: how far its surface is (below 0 inside it) and which way is out
+  surface(x, y, z) {
+    const w = this.world,
+      e = 0.12;
+    const d = w.sample(x, y, z);
+    const gx = (w.sample(x - e, y, z) - w.sample(x + e, y, z)) / (2 * e),
+      gy = (w.sample(x, y - e, z) - w.sample(x, y + e, z)) / (2 * e),
+      gz = (w.sample(x, y, z - e) - w.sample(x, y, z + e)) / (2 * e);
+    const g = Math.hypot(gx, gy, gz);
+    if (g < 1e-4) return { dist: -d, n: [0, 1, 0] }; // deep inside (or far away): out is up
+    return { dist: -d / g, n: [gx / g, gy / g, gz / g] };
+  }
+
+  // the deepest place the body at (x, y, z) sinks into the ground or a trunk: how deep, and which way is out
+  contact(x, y, z) {
+    let best = null;
+    for (const h of BALLS) {
+      const s = this.surface(x, y + h, z);
+      const pen = R - s.dist;
+      if (pen > 0 && (!best || pen > best.pen)) best = { pen, n: s.n, ground: true };
+    }
     for (const tr of this.near) {
       const top = tr.state === 'stump' ? tr.cutY : Infinity;
       for (const s of tr.segs) {
-        if (!s.trunk) continue;
-        for (const h of [y + 0.3, y + 1.0, y + 1.6]) {
-          const lo = Math.min(s.a[1], s.b[1]),
-            hi = Math.min(Math.max(s.a[1], s.b[1]), top);
-          if (h < lo || h > hi) continue;
-          const f = (h - s.a[1]) / (s.b[1] - s.a[1] || 1);
-          if (Math.hypot(x - (s.a[0] + (s.b[0] - s.a[0]) * f), z - (s.a[2] + (s.b[2] - s.a[2]) * f)) < s.r + R) return true;
+        if (!s.trunk || Math.min(s.a[1], s.b[1]) > top) continue;
+        const b = s.b[1] > top ? [s.a[0] + ((s.b[0] - s.a[0]) * (top - s.a[1])) / (s.b[1] - s.a[1]), top, s.a[2] + ((s.b[2] - s.a[2]) * (top - s.a[1])) / (s.b[1] - s.a[1])] : s.b;
+        for (const h of BALLS) {
+          const c = [x, y + h, z],
+            q = nearestOnSeg(c, s.a, b);
+          // trunks push only sideways (a stump's top is stood on like ground)
+          const dx = c[0] - q[0],
+            dz = c[2] - q[2],
+            dl = Math.hypot(dx, dz) || 1e-6;
+          const dy = c[1] - q[1];
+          const pen = R + s.r - Math.hypot(dl, dy);
+          if (pen > 0 && (!best || pen > best.pen)) best = dy > 0.05 && h === R && tr.state === 'stump' ? { pen, n: [0, 1, 0] } : { pen, n: [dx / dl, 0, dz / dl] };
         }
       }
     }
-    return false;
+    return best;
   }
 
-  feetHit(x, y, z) {
-    const w = this.world;
-    if (w.solid(x, y, z)) return true;
-    for (const [dx, dz] of RING) if (w.solid(x + dx * 0.6, y, z + dz * 0.6)) return true;
-    return false;
+  // whether the body would be inside something, standing at (x, y, z)
+  bodyHits(x, y, z) {
+    this.near = this.nearTrees(x, z);
+    const c = this.contact(x, y, z);
+    return !!c && c.pen > 0.04;
+  }
+
+  nearTrees(x, z) {
+    return this.world.trees.filter((t) => (t.state === 'standing' || t.state === 'chopping' || t.state === 'stump') && Math.abs(t.x - x) < 4 && Math.abs(t.z - z) < 4);
+  }
+
+  // push the body out of whatever it is in, a few times over (one push can lead into another)
+  resolve() {
+    let ground = false,
+      wall = false;
+    for (let k = 0; k < 4; k++) {
+      const c = this.contact(this.x, this.y, this.z);
+      if (!c) break;
+      const [nx, ny, nz] = c.n;
+      if (ny > WALKABLE) {
+        // ground to stand on: lift straight up, so standing on a slope does not slide you down it
+        this.y += Math.min(0.6, c.pen / ny);
+        if (this.vy < 0) this.vy = 0;
+        ground = true;
+      } else {
+        this.x += nx * c.pen;
+        this.y += ny * c.pen;
+        this.z += nz * c.pen;
+        // lose the speed going into the surface, keep the rest (so you slide along walls and down steep slopes)
+        const vn = this.vx * nx + this.vy * ny + this.vz * nz;
+        if (vn < 0) {
+          this.vx -= nx * vn;
+          this.vy -= ny * vn;
+          this.vz -= nz * vn;
+        }
+        if (ny > -0.3 && c.ground) wall = true; // a wall of earth (not a trunk) may be jumped
+      }
+    }
+    return { ground, wall };
   }
 
   /**
-   * One step of moving.
-   * @param {number} dt seconds
+   * One physics step.
+   * @param {number} dt seconds (STEP)
    * @param {{x: number, z: number, jump: boolean, sprint: boolean}} input the wish to move, -1..1, relative to where
    *   the player faces (z forward)
    */
   update(dt, input) {
-    dt = Math.min(dt, 0.05);
-    this.near = this.world.trees.filter((t) => (t.state === 'standing' || t.state === 'chopping' || t.state === 'stump') && Math.abs(t.x - this.x) < 5 && Math.abs(t.z - this.z) < 5);
+    this.prev = [this.x, this.y, this.z];
+    this.near = this.nearTrees(this.x, this.z);
     this.inWater = this.y + 0.5 < WATER_Y;
     const speed = this.inWater ? 3.2 : input.sprint ? 6.4 : 4.6;
     const sin = Math.sin(this.yaw),
@@ -88,58 +157,42 @@ export class Player {
       const want = input.jump ? 3.8 : -1.6;
       this.vy += (want - this.vy) * Math.min(1, 4 * dt);
     } else {
-      this.vy -= 26 * dt;
-      if (input.jump && this.onGround) this.vy = 8.2;
-      this.vy = Math.max(-40, this.vy);
-    }
-
-    let blocked = false;
-    const steps = Math.max(1, Math.ceil((Math.max(Math.hypot(this.vx, this.vz), Math.abs(this.vy)) * dt) / 0.12));
-    const h = dt / steps;
-    const wasGround = this.onGround;
-    this.onGround = false;
-    for (let s = 0; s < steps; s++) {
-      // across: straight on, or up a slope or a small ledge, or sliding along a wall
-      const mx = this.vx * h,
-        mz = this.vz * h;
-      if (mx || mz) {
-        const climb = wasGround || this.inWater ? 0.12 + Math.hypot(mx, mz) * 1.7 : 0.05;
-        const tryMove = (dx, dz) => {
-          for (const up of [0, climb * 0.5, climb])
-            if (!this.bodyHits(this.x + dx, this.y + up, this.z + dz)) {
-              this.x += dx;
-              this.z += dz;
-              this.y += up;
-              return true;
-            }
-          return false;
-        };
-        if (!tryMove(mx, mz)) {
-          blocked = true;
-          if (tryMove(mx, 0)) this.vz *= 0.5;
-          else if (tryMove(0, mz)) this.vx *= 0.5;
-        }
+      this.vy = Math.max(-40, this.vy - GRAVITY * dt);
+      if (input.jump && this.airTime < 0.1 && this.vy <= 0.5) {
+        this.vy = JUMP;
+        this.airTime = 1;
       }
-      // up and down: land on the ground, lifted out of it if sunk in; bump the head
-      const ny = this.y + this.vy * h;
-      if (this.vy <= 0 && this.feetHit(this.x, ny, this.z)) {
-        let lift = 0;
-        while (lift < 1 && this.feetHit(this.x, ny + lift, this.z)) lift += 0.02;
-        this.y = ny + lift;
-        this.vy = 0;
-        this.onGround = true;
-      } else if (this.vy > 0 && this.world.solid(this.x, ny + TALL, this.z)) {
-        this.vy = 0;
-      } else this.y = ny;
     }
-    // resting on the ground counts as standing on it
-    if (!this.onGround && this.vy <= 0 && this.feetHit(this.x, this.y - 0.05, this.z)) this.onGround = true;
 
-    // walking into a ledge too high to step up jumps it (so touch players need not jump at every one)
+    // move, in small enough pieces that nothing is passed through, pushing out after each
+    const wasGround = this.onGround;
+    const steps = Math.max(1, Math.ceil((Math.hypot(this.vx, this.vy, this.vz) * dt) / (R * 0.6)));
+    let ground = false,
+      wall = false;
+    for (let s = 0; s < steps; s++) {
+      this.x += (this.vx * dt) / steps;
+      this.y += (this.vy * dt) / steps;
+      this.z += (this.vz * dt) / steps;
+      const r = this.resolve();
+      ground ||= r.ground;
+      wall ||= r.wall;
+    }
+    // walking down a slope or over a bump: stay on the ground instead of hopping off it
+    if (!ground && wasGround && this.vy <= 0 && !this.inWater) {
+      const y0 = this.y;
+      this.y -= 0.3;
+      if (this.resolve().ground) ground = true;
+      else this.y = y0;
+    }
+    this.onGround = ground;
+    this.airTime = ground ? 0 : this.airTime + dt;
+
+    // walking into a ledge too high to walk up jumps it (so touch players need not jump at every one)
     const wants = Math.abs(input.x) + Math.abs(input.z) > 0.1;
-    if (blocked && wants && (this.onGround || this.inWater)) {
+    if (wall && wants && (ground || this.inWater) && this.vy <= 0.5) {
       const l = Math.hypot(wx, wz) || 1;
-      if (!this.bodyHits(this.x + (wx / l) * 0.5, this.y + 1.2, this.z + (wz / l) * 0.5)) this.vy = this.inWater ? 6.5 : 7.6;
+      if (!this.bodyHits(this.x + (wx / l) * 0.45, this.y + 1.15, this.z + (wz / l) * 0.45)) this.vy = this.inWater ? 6.5 : 7.6;
+      this.near = this.nearTrees(this.x, this.z);
     }
 
     // the edge of the world is the open sea
@@ -147,6 +200,17 @@ export class Player {
     this.z = Math.max(0.5, Math.min(SIZE - 1.5, this.z));
     if (this.y < -5) Object.assign(this, { x: this.world.spawn[0], y: this.world.spawn[1] + 2, z: this.world.spawn[2], vy: 0 });
     this.y = Math.min(this.y, HEIGHT + 20);
+  }
+
+  // where to draw the body: between the last step and this one, by how far the clock is into the next step
+  drawn(alpha) {
+    return [this.prev[0] + (this.x - this.prev[0]) * alpha, this.prev[1] + (this.y - this.prev[1]) * alpha, this.prev[2] + (this.z - this.prev[2]) * alpha];
+  }
+
+  // jump straight to a place (no drawing in between)
+  place(x, y, z) {
+    Object.assign(this, { x, y, z, vx: 0, vy: 0, vz: 0 });
+    this.prev = [x, y, z];
   }
 
   dir() {
