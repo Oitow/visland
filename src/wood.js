@@ -198,6 +198,12 @@ export class Woodcutter {
   // a piece comes away: a body of its own, at its centre of mass
   loose(off, from, dir) {
     const world = from ? this.mapPoints(off, (p) => this.toWorld(from, p)) : off;
+    if (!this.physics) {
+      // no physics engine here: what comes away falls apart into wood at once
+      this.leafBurst(world.leaves.filter((l) => !l.nut).map((l) => l.c), 2);
+      this.give(Math.max(1, Math.round(world.wood.reduce((n, w) => n + segmentsOf(w).reduce((k, s) => k + Math.hypot(...sub(s.b, s.a)) * s.r * 12, 0), 0))));
+      return;
+    }
     let m = 0,
       c = [0, 0, 0];
     for (const w of world.wood)
