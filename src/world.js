@@ -6,7 +6,7 @@ import { islandHeight, windingRiver } from '../vendor/almanac/land.js';
 import { fractalNoise, ridgedNoise, valueNoise, latticeRandom } from '../vendor/almanac/noise.js';
 import { SeededRandom, hash32 } from '../vendor/almanac/random.js';
 import { smoothstep, lerp } from '../vendor/almanac/numbers.js';
-import { branchingTree, swayingChain } from '../vendor/almanac/growth.js';
+import { growTree, growBush } from './trees.js';
 import { valueNoise3 } from './noise3.js';
 import { SAND, GRASS, DIRT, STONE, SNOW, DRYGRASS, GRAVEL } from './materials.js';
 
@@ -191,8 +191,14 @@ export class World {
         }
       }
 
-    // 3. trees, one at most in each 4 x 4 cell, the kind by where it stands
+    // 3. trees, one at most in each 4 x 4 cell, the kind by where it stands; bushes between them
     const forest = (x, z) => fractalNoise(x / 38, z / 38, s + 20, 3);
+    const plant = (kind, x, y, z, rng) => {
+      const t = kind === 'bush' ? growBush([x, y - 0.15, z], rng) : growTree(kind, [x, y - 0.15, z], rng, s + 70);
+      t.id = this.trees.length;
+      t.state = 'standing';
+      this.trees.push(t);
+    };
     for (let cz = 1; cz < SIZE / 4 - 1; cz++)
       for (let cx = 1; cx < SIZE / 4 - 1; cx++) {
         const x = cx * 4 + Math.floor(latticeRandom(cx, cz, s + 21) * 4),
@@ -202,19 +208,16 @@ export class World {
         const top = this.m(x, Math.floor(y - 0.5), z),
           roll = latticeRandom(cx, cz, s + 23);
         const rng = new SeededRandom(hash32(x * 7919 + z * 104729 + s));
-        let tree = null;
         if (top === GRASS) {
           if (y > SEA + 14) {
-            if (roll < 0.45) tree = pine(x, y, z, rng);
-          } else if (roll < 0.05 + 0.6 * smoothstep(0.48, 0.7, forest(x, z))) tree = leafTree(x, y, z, rng);
+            if (roll < 0.45) plant('pine', x, y, z, rng);
+          } else if (roll < 0.05 + 0.6 * smoothstep(0.48, 0.7, forest(x, z))) plant(valueNoise(x / 26, z / 26, s + 30) > 0.62 ? 'birch' : 'oak', x, y, z, rng);
+          else if (roll > 0.82) plant('bush', x + 2, this.surfaceY(x + 2, z + 1), z + 1, rng);
         } else if (top === DRYGRASS) {
-          if (roll < 0.09) tree = umbrellaTree(x, y, z, rng);
+          if (roll < 0.09) plant('umbrella', x, y, z, rng);
+          else if (roll > 0.9) plant('bush', x, y, z, rng);
         } else if (top === SAND && y > WATER_Y + 0.3 && y < WATER_Y + 3) {
-          if (roll < 0.3) tree = palm(x, y, z, rng);
-        }
-        if (tree) {
-          tree.id = this.trees.length;
-          this.trees.push(tree);
+          if (roll < 0.3) plant('palm', x, y, z, rng);
         }
       }
 
@@ -267,93 +270,11 @@ export class World {
         let open = Math.abs(this.surfaceY(x, z) - h) < 0.3;
         for (let dz = -2; dz <= 2 && open; dz++)
           for (let dx = -2; dx <= 2 && open; dx++) if (Math.abs(this.heights[(z + dz) * SIZE + x + dx] - h) > 1) open = false;
-        if (open && this.trees.some((t) => Math.hypot(t.x - x, t.z - z) < 3)) open = false;
+        if (open && this.trees.some((t) => Math.hypot(t.x - x, t.z - z) < 3.5)) open = false;
         if (!open) continue;
         bestD = d;
         best = [x + 0.5, h + 0.05, z + 0.5];
       }
     this.spawn = best || [SIZE / 2, this.surfaceY(SIZE / 2, SIZE / 2) + 0.1, SIZE / 2];
   }
-}
-
-// --- trees as shapes: wood as segments (a start, an end, a radius), leaves as clumps; flora.js makes meshes of them
-
-// a point of an almanac tree (drawn upward in a plane) set into the world, the plane turned to `turn`
-const into = (x, y, z, turn) => (px, py) => [x + Math.cos(turn) * px, y - py, z + Math.sin(turn) * px];
-
-// a leafy tree: the almanac's branchingTree in two crossed planes, a clump of leaves at every tip
-function leafTree(x, y, z, rng) {
-  const plan = { levels: 3, forks: 2, spread: 0.55, decay: 0.72, length: 3 + rng.range(0, 1.6), width: 1 };
-  const turn = rng.range(0, Math.PI);
-  const segs = [],
-    clumps = [];
-  let trunkTop = null;
-  for (const t of [turn, turn + Math.PI / 2]) {
-    const tree = branchingTree(0, 0, plan, 1, rng);
-    const at = into(x, y - 0.3, z, t);
-    // the second plane's branches grow from the first one's trunk
-    const top = at(tree.segments[0].x1, tree.segments[0].y1);
-    const shift = trunkTop ? trunkTop.map((v, k) => v - top[k]) : [0, 0, 0];
-    trunkTop = trunkTop || top;
-    const p = (px, py) => at(px, py).map((v, k) => v + shift[k]);
-    for (const sg of tree.segments) {
-      if (sg.level === plan.levels && segs.length) continue; // one trunk is enough
-      const a = p(sg.x0, sg.y0),
-        m = p(0.25 * sg.x0 + 0.5 * sg.cx + 0.25 * sg.x1, 0.25 * sg.y0 + 0.5 * sg.cy + 0.25 * sg.y1),
-        b = p(sg.x1, sg.y1);
-      const r = 0.1 + 0.1 * sg.level;
-      segs.push({ a, b: m, r: r * 1.05 }, { a: m, b, r });
-    }
-    for (const [px, py] of tree.tips) clumps.push({ c: p(px, py), r: rng.range(1.5, 2.1), flat: 0.8 });
-  }
-  return { kind: 'leaf', x, y, z, segs, clumps, hue: rng.range(-1, 1) };
-}
-
-// an umbrella tree of the dry grass: wide forks, flat crowns
-function umbrellaTree(x, y, z, rng) {
-  const plan = { levels: 2, forks: 2, spread: 0.85, decay: 0.85, length: 3.2 + rng.range(0, 1), width: 1 };
-  const tree = branchingTree(0, 0, plan, 1, rng);
-  const p = into(x, y - 0.3, z, rng.range(0, Math.PI));
-  const segs = tree.segments.map((sg) => ({ a: p(sg.x0, sg.y0), b: p(sg.x1, sg.y1), r: 0.12 + 0.1 * sg.level }));
-  const clumps = tree.tips.map(([px, py]) => {
-    const c = p(px, py);
-    c[1] += 0.6;
-    return { c, r: 2.6, flat: 0.35 };
-  });
-  return { kind: 'umbrella', x, y, z, segs, clumps, hue: rng.range(-1, 1) };
-}
-
-// a palm: its trunk bent like the almanac's swayingChain caught at one moment, fronds drooping all round
-function palm(x, y, z, rng) {
-  const pts = swayingChain(0, 0, { segments: 7, length: 6 + rng.range(0, 2.5), sway: 0.5, lean: rng.range(-1.2, 1.2) }, 1, rng.range(0, 10), 0);
-  const p = into(x, y - 0.3, z, rng.range(0, Math.PI * 2));
-  const segs = [];
-  for (let j = 0; j < pts.length - 1; j++) segs.push({ a: p(...pts[j]), b: p(...pts[j + 1]), r: 0.26 - j * 0.015 });
-  const top = p(...pts.at(-1));
-  const fronds = [];
-  const n = 6 + rng.int(0, 2),
-    a0 = rng.range(0, Math.PI * 2);
-  for (let k = 0; k < n; k++) {
-    const a = a0 + (k / n) * Math.PI * 2 + rng.range(-0.2, 0.2),
-      len = 3 + rng.range(0, 1.2),
-      line = [];
-    for (let i = 0; i <= 6; i++) {
-      const d = (i / 6) * len;
-      line.push([top[0] + Math.cos(a) * d, top[1] + 0.3 + d * 0.35 - d * d * 0.16, top[2] + Math.sin(a) * d]);
-    }
-    fronds.push(line);
-  }
-  return { kind: 'palm', x, y, z, segs, clumps: [], fronds, crown: top, hue: rng.range(-1, 1) };
-}
-
-// a pine: a straight trunk in tiers of needles, narrowing to the top
-function pine(x, y, z, rng) {
-  const h = 6 + rng.range(0, 4);
-  const segs = [{ a: [x, y - 0.3, z], b: [x, y + h, z], r: 0.24 }];
-  const cones = [];
-  for (let k = 0; k < 4; k++) {
-    const f = k / 4;
-    cones.push({ c: [x, y + 1.8 + f * (h - 2.2), z], r: 2.3 * (1 - f) + 0.7, h: 2.6 - f * 0.6 });
-  }
-  return { kind: 'pine', x, y, z, segs, clumps: [], cones, hue: rng.range(-1, 1) };
 }

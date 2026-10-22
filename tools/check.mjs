@@ -45,6 +45,23 @@ for (const name of ['nebel-bucht-7', 'koralle-riff-3', 'sturm-kap-91', 'lava-kli
   const moved = Math.hypot(p.x - start[0], p.z - start[1]);
   check(moved > 1 && !a.solid(p.x, p.y + 0.5, p.z), `${name}: the player walks ${moved.toFixed(1)} m and is not inside the ground`);
 
+  // walking straight at a tree trunk stops at its bark
+  const tree = a.trees.find((t) => t.kind === 'oak' || t.kind === 'pine' || t.kind === 'birch');
+  if (tree) {
+    const q = new Player(a);
+    Object.assign(q, { x: tree.x - 2, z: tree.z, y: a.surfaceY(tree.x - 2, tree.z) + 0.05, yaw: -Math.PI / 2, vy: 0 });
+    for (let i = 0; i < 120; i++) q.update(1 / 60, { x: 0, z: 1, jump: false });
+    // how near the body came to the bark, at its own height
+    let gap = Infinity;
+    for (const s of tree.segs.filter((s) => s.trunk))
+      for (let h = q.y + 0.3; h <= q.y + 1.6; h += 0.1) {
+        const f = (h - s.a[1]) / (s.b[1] - s.a[1]);
+        if (f < 0 || f > 1) continue;
+        gap = Math.min(gap, Math.hypot(q.x - (s.a[0] + (s.b[0] - s.a[0]) * f), q.z - (s.a[2] + (s.b[2] - s.a[2]) * f)) - s.r);
+      }
+    check(gap > 0.25, `${name}: a ${tree.kind} trunk stops the player (${gap.toFixed(2)} m from the bark)`);
+  }
+
   // digging under the player's feet takes ground away; building puts it back
   const [gx, gy, gz] = [p.x, p.y - 0.4, p.z];
   const took = a.brush(gx, gy, gz, 1.25, false);
@@ -54,4 +71,12 @@ for (const name of ['nebel-bucht-7', 'koralle-riff-3', 'sturm-kap-91', 'lava-kli
 }
 const { seedOf: so } = await import('../vendor/almanac/seeds.js');
 check(so('Nebel-Bucht-7 ') === so('nebel-bucht-7'), 'seeds ignore case and spaces at the ends');
+// every kind of tree grows somewhere among a handful of islands
+const kinds = new Set();
+for (const n of ['nebel-bucht-7', 'koralle-riff-3', 'sturm-kap-91']) {
+  const w = new World(seedOf(n));
+  w.generate();
+  for (const t of w.trees) kinds.add(t.kind);
+}
+check(['oak', 'birch', 'pine', 'palm', 'umbrella', 'bush'].every((k) => kinds.has(k)), `every kind of tree grows (${[...kinds].join(', ')})`);
 process.exit(failed ? 1 : 0);

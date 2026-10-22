@@ -3,10 +3,13 @@
 import * as THREE from 'three';
 import { seedOf, seedWords } from '../vendor/almanac/seeds.js';
 import { World, SIZE, CHUNK, WATER_Y, SEA } from './world.js';
-import { STONE, DIRT, WOOD, LANTERN, DROP, MATERIALS, itemName } from './materials.js';
+import { STONE, DIRT, WOOD, LANTERN, AXE, DROP, itemName } from './materials.js';
 import { meshChunk } from './surfacenets.js';
-import { treesGeometry, crystalMesh, lanternMesh, tuftGeometry } from './flora.js';
-import { terrainMaterial, floraMaterial, tuftMaterial, glowMaterial, U } from './shaders.js';
+import { treesGeometry, crystalMesh, lanternMesh, tuftGeometry, leafAtlas, axeGeometry } from './flora.js';
+import { terrainMaterial, woodMaterial, leafMaterial, tuftMaterial, glowMaterial, U } from './shaders.js';
+import { Felling } from './felling.js';
+import { SPECIES } from './trees.js';
+import { Particles } from './particles.js';
 import { Sky } from './sky.js';
 import { Water } from './water.js';
 import { Birds } from './birds.js';
@@ -25,6 +28,7 @@ const DAY_SECONDS = 480; // one whole day and night
 const DIG_R = 1.25; // how big a ball one dig takes out
 const BUILD_R = 1.1; // and one build heaps on
 const START_INV = [
+  [AXE, 1],
   [STONE, 24],
   [DIRT, 24],
   [LANTERN, 10],
@@ -42,7 +46,8 @@ const camera = new THREE.PerspectiveCamera(72, 1, 0.08, 700);
 camera.rotation.order = 'YXZ';
 
 const terrainMat = terrainMaterial();
-const floraMat = floraMaterial();
+const woodMat = woodMaterial();
+const leafMat = leafMaterial(leafAtlas());
 const tuftMat = tuftMaterial();
 const glowMat = glowMaterial();
 const lanternGlow = new THREE.MeshBasicMaterial({ color: 0xffd27a });
@@ -56,6 +61,20 @@ const ring = new THREE.Mesh(
 ring.visible = false;
 ring.renderOrder = 12;
 scene.add(ring);
+
+// the axe in the hand: hung on the camera, at the lower right, swinging when it is used
+scene.add(camera);
+const axeMat = woodMaterial();
+axeMat.depthTest = false; // always in front, never into a wall
+axeMat.side = THREE.DoubleSide;
+const axe = new THREE.Group();
+const axeMesh = new THREE.Mesh(axeGeometry(), axeMat);
+axeMesh.rotation.set(0, Math.PI / 2 + 0.55, 0); // the blade forward and a little to the left, as it is held
+axeMesh.renderOrder = 100;
+axe.add(axeMesh);
+axe.position.set(0.34, -0.36, -0.55);
+camera.add(axe);
+let swing = 1; // 0..1 through a swing, 1 at rest
 
 // everything that belongs to one island
 let game = null;
@@ -71,13 +90,14 @@ resize();
 function disposeIsland() {
   if (!game) return;
   for (const c of game.chunks.values())
-    for (const m of [c.ground, c.trees, ...c.tufts]) {
+    for (const m of [c.ground, ...c.trees, ...c.tufts]) {
       if (!m) continue;
       scene.remove(m);
       m.geometry.dispose();
     }
   for (const o of game.extras) scene.remove(o);
   for (const o of game.things.values()) scene.remove(o);
+  game.felling.clear();
   game = null;
 }
 
@@ -89,7 +109,11 @@ function growIsland(name) {
   const saved = store.load(seed);
   // the player's changes, laid again over the island as it grew
   for (const [kind, x, y, z, r, m] of saved?.ops || []) world.brush(x, y, z, r, kind === 'b', m);
-  for (const id of saved?.trees || []) if (world.trees[id]) world.trees[id].removed = true;
+  // felled trees: [id, 'stump' | 'gone'] (an older save lists only the ids of trees that are gone)
+  for (const e of saved?.trees || []) {
+    const [id, state] = Array.isArray(e) ? e : [e, 'gone'];
+    if (world.trees[id]) Object.assign(world.trees[id], { state, cutY: world.trees[id].y + 0.55 });
+  }
   for (const id of saved?.found || []) if (world.crystals[id]) world.crystals[id].found = true;
   world.lanterns = saved?.lanterns || [];
   const g = {
@@ -109,6 +133,22 @@ function growIsland(name) {
     saveTimer: 0,
   };
   if (saved?.pos) [g.player.x, g.player.y, g.player.z, g.player.yaw, g.player.pitch] = saved.pos;
+  if (!g.inv.some(([b]) => b === AXE)) g.inv.unshift([AXE, 1]);
+  g.particles = new Particles(scene);
+  g.felling = new Felling({
+    scene,
+    world,
+    particles: g.particles,
+    sound,
+    wood: woodMat,
+    leaves: leafMat,
+    treeChanged: (t) => remeshTrees(g, Math.floor(t.x / CHUNK), Math.floor(t.z / CHUNK)),
+    give: (n) => {
+      give(WOOD, n);
+      ui.nameShow(`+${n} Holz (${g.inv.find(([b]) => b === WOOD)[1]})`);
+    },
+    say: (s) => ui.nameShow(s),
+  });
   g.treesIn = new Map();
   for (const t of world.trees) {
     const k = Math.floor(t.x / CHUNK) + ',' + Math.floor(t.z / CHUNK);
@@ -126,7 +166,7 @@ function growIsland(name) {
   g.water = new Water(scene, world);
   g.sky = new Sky(scene, seed);
   g.birds = new Birds(scene, seed);
-  g.extras.push(g.water.mesh, g.sky.dome, g.sky.stars, ...g.sky.clouds, ...g.birds.meshes);
+  g.extras.push(g.water.mesh, g.sky.dome, g.sky.stars, ...g.sky.clouds, ...g.birds.meshes, g.particles.mesh);
   // at night, a beam of light stands over every crystal not yet found
   g.beams = world.crystals.map((c) => {
     const m = new THREE.Mesh(
@@ -147,7 +187,7 @@ function growIsland(name) {
 
 function chunkOf(g, cx, cz) {
   const k = cx + ',' + cz;
-  if (!g.chunks.has(k)) g.chunks.set(k, { ground: null, trees: null, tufts: [] });
+  if (!g.chunks.has(k)) g.chunks.set(k, { ground: null, trees: [], tufts: [] });
   return g.chunks.get(k);
 }
 
@@ -198,21 +238,26 @@ function remeshGround(g, cx, cz) {
 
 function remeshTrees(g, cx, cz) {
   const c = chunkOf(g, cx, cz);
-  if (c.trees) {
-    scene.remove(c.trees);
-    c.trees.geometry.dispose();
-    c.trees = null;
+  for (const m of c.trees) {
+    scene.remove(m);
+    m.geometry.dispose();
   }
+  c.trees = [];
   const geo = treesGeometry(g.treesIn.get(cx + ',' + cz) || []);
-  if (geo) {
-    c.trees = new THREE.Mesh(geo, floraMat);
-    scene.add(c.trees);
-  }
+  for (const [gg, mat] of [
+    [geo.wood, woodMat],
+    [geo.leaves, leafMat],
+  ])
+    if (gg) {
+      const m = new THREE.Mesh(gg, mat);
+      scene.add(m);
+      c.trees.push(m);
+    }
 }
 
 // a crystal ({x, y, z, id}) or a lantern ([x, y, z]) in the scene
 function addThing(g, thing) {
-  const m = Array.isArray(thing) ? lanternMesh(floraMat, lanternGlow) : crystalMesh(glowMat, thing.id);
+  const m = Array.isArray(thing) ? lanternMesh(woodMat, lanternGlow) : crystalMesh(glowMat, thing.id);
   const [x, y, z] = Array.isArray(thing) ? thing : [thing.x, thing.y, thing.z];
   m.position.set(x, y - 0.1, z);
   scene.add(m);
@@ -258,6 +303,14 @@ function give(item, n = 1) {
 }
 
 const round2 = (v) => Math.round(v * 100) / 100;
+const smooth = (x) => x * x * (3 - 2 * x);
+
+// what a tree is, said when it is looked at
+function treeNote(t) {
+  if (t.kind === 'bush') return 'Busch · mit der Axt entfernen';
+  if (t.state === 'stump') return 'Baumstumpf · mit der Axt entfernen';
+  return `${SPECIES[t.kind].name} · mit der Axt fällen`;
+}
 
 function dig() {
   const g = game;
@@ -265,6 +318,7 @@ function dig() {
   const hit = g.player.target();
   if (!hit) return;
   const w = g.world;
+  if (g.inv[g.selected]?.[0] === AXE) swing = 0;
   if (hit.kind === 'crystal') {
     const c = hit.thing;
     c.found = true;
@@ -280,12 +334,12 @@ function dig() {
     give(LANTERN);
     sound.build();
   } else if (hit.kind === 'tree') {
-    const t = hit.thing;
-    t.removed = true;
-    remeshTrees(g, Math.floor(t.x / CHUNK), Math.floor(t.z / CHUNK));
-    give(WOOD, 3 + Math.round(t.segs.length / 3));
-    sound.dig();
-    ui.nameShow(`Holz (${g.inv.find(([b]) => b === WOOD)[1]})`);
+    // trees want the axe: take it in hand if it is not
+    const ai = g.inv.findIndex(([b]) => b === AXE);
+    if (g.selected !== ai) select(ai);
+    swing = 0;
+    g.felling.chop(hit.thing, g.player);
+    return 0.5;
   } else {
     const [x, y, z] = hit.point.map(round2);
     const took = w.brush(x, y, z, DIG_R, false);
@@ -304,7 +358,7 @@ function build() {
   if (!g?.playing) return;
   const hit = g.player.target();
   const slot = g.inv[g.selected];
-  if (!hit || hit.kind !== 'ground' || !slot || slot[1] <= 0) return;
+  if (!hit || hit.kind !== 'ground' || !slot || slot[1] <= 0 || slot[0] === AXE) return;
   const w = g.world;
   if (slot[0] === LANTERN) {
     if (hit.normal[1] < 0.4) return ui.nameShow('Laternen brauchen ebenen Boden');
@@ -338,7 +392,7 @@ function persist() {
   store.save(g.seed, {
     name: g.name,
     ops: g.ops,
-    trees: w.trees.filter((t) => t.removed).map((t) => t.id),
+    trees: w.trees.filter((t) => t.state === 'stump' || t.state === 'gone').map((t) => [t.id, t.state]),
     found: w.crystals.filter((c) => c.found).map((c) => c.id),
     lanterns: w.lanterns,
     inv: g.inv,
@@ -402,8 +456,8 @@ function enterGame() {
   input.enabled = true;
   ui.showMenu(false);
   ui.help.textContent = touch
-    ? 'Links: laufen · Rechts wischen: schauen · ⛏ graben · ▣ bauen'
-    : 'Klicken zum Steuern · WASD laufen · Maus schauen · Linksklick graben · Rechtsklick bauen · 1–9 / Mausrad: Material · M: Menü';
+    ? 'Links: laufen · Rechts wischen: schauen · ⛏ graben, am Baum: hacken · ▣ bauen'
+    : 'Klicken zum Steuern · WASD laufen · Maus schauen · Linksklick graben, am Baum: hacken · Rechtsklick bauen · 1–9 / Mausrad: wählen · M: Menü';
   // the controls after the welcome, so the two notes never cover each other
   clearTimeout(helpTimer);
   helpTimer = setTimeout(() => {
@@ -445,8 +499,19 @@ function frame(now) {
     }
     const k = hit ? hit.kind + (hit.thing?.id ?? '') : '';
     if (k !== lastTarget && hit && hit.kind !== 'ground')
-      ui.nameShow({ crystal: 'Kristall · abbauen zum Einsammeln', tree: 'Baum · fällen für Holz', lantern: 'Laterne · abbauen zum Mitnehmen' }[hit.kind]);
+      ui.nameShow(
+        hit.kind === 'tree'
+          ? treeNote(hit.thing)
+          : { crystal: 'Kristall · abbauen zum Einsammeln', lantern: 'Laterne · abbauen zum Mitnehmen' }[hit.kind],
+      );
     lastTarget = k;
+    // the axe: shown while it is in hand, swinging back, down hard, and up again
+    axe.visible = g.inv[g.selected]?.[0] === AXE;
+    swing = Math.min(1, swing + dt / 0.42);
+    const lift = swing < 0.3 ? smooth(swing / 0.3) * 0.9 : swing < 0.5 ? 0.9 - smooth((swing - 0.3) / 0.2) * 1.8 : -0.9 + smooth((swing - 0.5) / 0.5) * 0.9;
+    const walk = Math.hypot(p.vx, p.vz) > 0.5 && p.onGround ? Math.sin(g.time * 9) : 0;
+    axe.rotation.set(-0.35 + lift, 0.2, -0.15);
+    axe.position.set(0.34, -0.36 + walk * 0.012 + Math.max(0, lift) * 0.05, -0.55);
     if ((g.saveTimer -= dt) <= 0) {
       g.saveTimer = 5;
       persist();
@@ -454,6 +519,7 @@ function frame(now) {
   } else {
     // the title: the camera circles the island
     ring.visible = false;
+    axe.visible = false;
     const a = g.time * 0.05;
     camera.position.set(SIZE / 2 + Math.cos(a) * 125, 58, SIZE / 2 + Math.sin(a) * 125);
     camera.lookAt(SIZE / 2, 14, SIZE / 2);
@@ -464,6 +530,8 @@ function frame(now) {
   U.uCam.value.copy(camera.position);
   const day = g.sky.update(g.t, g.time, camera, underwater);
   g.birds.update(dt, g.time, p, day);
+  g.felling.update(dt, p);
+  g.particles.update(dt, day.light);
   const night = Math.max(0, Math.min(1, (day.night - 0.3) / 0.5));
   for (const b of g.beams) {
     b.visible = !b.userData.crystal.found && night > 0;
@@ -495,4 +563,5 @@ window.visland = {
   },
   dig,
   build,
+  renderer,
 };

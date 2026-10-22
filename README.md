@@ -24,7 +24,7 @@ Höhle, der Rest irgendwo dazwischen. Nachts steht über jedem noch nicht gefund
 | Laufen           | linker Daumen (Joystick)     | WASD oder Pfeiltasten       |
 | Schauen          | rechts wischen               | Maus (erst ins Bild klicken) |
 | Springen/Schwimmen | ⤒                          | Leertaste                   |
-| Graben, Bäume fällen, einsammeln | ⛏ (gedrückt halten) | Linksklick              |
+| Graben; am Baum: mit der Axt hacken; einsammeln | ⛏ (gedrückt halten) | Linksklick |
 | Material auftragen, Laterne setzen | ▣                    | Rechtsklick                 |
 | Material wählen  | Hotbar antippen              | 1–9 oder Mausrad            |
 | Menü             | ☰                            | ☰ oder M                    |
@@ -44,7 +44,22 @@ eine **Dichte** (über 0 heißt Boden, unter 0 heißt Luft, ungefähr der Abstan
   16 × 16-Stücke neu berechnet.
 - **Höhlen** entstehen, wo zwei 3D-Noise-Felder gleichzeitig ihre Mitte kreuzen: zwei Flächen schneiden sich in
   einer Linie, das ergibt Tunnel (`src/noise3.js`).
-- Bäume, Kristalle und Laternen sind eigene Low-Poly-Objekte (`src/flora.js`).
+- Bäume, Kristalle und Laternen sind eigene Objekte (`src/trees.js`, `src/flora.js`).
+
+## Bäume
+
+Jeder Baum wächst in 3D aus seinem Seed (`src/trees.js`): Ein Ast teilt sich in Kinder, die im goldenen Winkel
+(137,5°) um ihn herum abzweigen, wie Äste und Blätter an echten Pflanzen. Sie biegen sich zum Licht oder hängen
+durch, und Noise lässt sie leicht wandern. Arten: **Eiche** (breit, manche schon herbstlich), **Birke** (weiße
+Rinde, hängende Zweige), **Kiefer** (Astquirle in Etagen), **Palme** (geringelter, gebogener Stamm, Wedel,
+Kokosnüsse), **Schirmakazie** (flache Krone) und **Büsche**. Die Rinde sind Röhren mit Wurzeln am Fuß, das Laub sind
+Blattbüschel mit einer im Code gemalten Blatt-Textur (`leafAtlas` in `src/flora.js`). Alles wiegt sich im Wind.
+
+**Fällen** (`src/felling.js`): Mit der Axt in der Hand vor dem Stamm hacken. Jeder Hieb schlägt die Kerbe auf
+deiner Seite tiefer, Späne fliegen, der Baum zittert. Dicke Stämme brauchen mehr Hiebe (3 bis 7). Ist der Schnitt
+durch, knarrt der Baum und kippt von dir weg, erst langsam, dann immer schneller, wie ein umgedrehtes Pendel. Er
+schlägt auf, wirft Blätter und Staub auf und verschwindet dann. Wo er lag, bleiben Holzstämme, die du durch
+Darüberlaufen aufsammelst. Der Stumpf mit Jahresringen bleibt stehen; zwei weitere Hiebe räumen ihn weg.
 
 ## Was woher kommt
 
@@ -52,8 +67,9 @@ eine **Dichte** (über 0 heißt Boden, unter 0 heißt Luft, ungefähr der Abstan
 | ------------------------------------ | ---------------------------------------------------------- | ---------------- |
 | Inselform, Berge, Fluss              | `islandHeight`, `ridgedNoise`, `windingRiver`, `smoothstep` | `src/world.js`   |
 | Wälder, Steppen, Schneegrenze        | `fractalNoise`, `valueNoise`, `latticeRandom`              | `src/world.js`   |
-| Laubbäume und Schirmbäume            | `branchingTree` (in zwei gekreuzten Ebenen)                | `src/world.js`   |
-| Palmen mit gebogenem Stamm           | `swayingChain`                                             | `src/world.js`   |
+| Wo welche Baumart wächst             | `fractalNoise`, `valueNoise`, `latticeRandom`              | `src/world.js`   |
+| Äste, die sich biegen und wandern    | `valueNoise`, `SeededRandom`, `lerp`                       | `src/trees.js`   |
+| Zittern beim Hacken, Nachfedern beim Aufprall | `dampedSpring`                                    | `src/felling.js` |
 | 3D-Noise für Höhlen                  | `hash32` (gleiches Prinzip wie `valueNoise`, eine Dimension mehr) | `src/noise3.js` |
 | Farben der Materialien               | `hexToRgb`, `mixColour`                                    | `src/surfacenets.js` |
 | Tag und Nacht, Himmelsfarben         | `dayCycle`, `mixColour`                                    | `src/sky.js`     |
@@ -62,7 +78,9 @@ eine **Dichte** (über 0 heißt Boden, unter 0 heißt Luft, ungefähr der Abstan
 | Möwenschwarm                         | `flockStep` (Boids)                                        | `src/birds.js`   |
 | Lesbare Seeds                        | `seedOf`, `seedWords`, `SeededRandom`                      | `src/main.js`    |
 
-Eigener Code im Spiel: Surface-Nets-Mesher mit Ambient Occlusion (`src/surfacenets.js`), Shader für Gelände
+Eigener Code im Spiel: 3D-Baumgenerator (`src/trees.js`, nach den Verzweigungsmodellen aus *The Algorithmic
+Beauty of Plants*, auf denen auch der Almanac aufbaut), Fällen mit Physik (`src/felling.js`), Partikel
+(`src/particles.js`), Surface-Nets-Mesher mit Ambient Occlusion (`src/surfacenets.js`), Shader für Gelände
 (Körnung, Kaustiken unter Wasser, Laternenlicht pro Pixel), Gras, Bäume, Wasser, Himmel und Wolken
 (`src/shaders.js`), Physik auf glattem Boden und Blickstrahl (`src/player.js`), Steuerung für Touch und Maus
 (`src/input.js`) und Klänge per WebAudio (`src/sound.js`). Für 3D wird [three.js](https://threejs.org) vom CDN

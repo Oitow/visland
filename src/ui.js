@@ -1,5 +1,5 @@
 // The screens over the game: the title with its seed, the HUD (crystals, clock, hotbar) and short messages.
-import { itemName } from './materials.js';
+import { itemName, AXE } from './materials.js';
 import { drawItemIcon } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
@@ -45,14 +45,14 @@ export class UI {
     this.hotbar.innerHTML = '';
     inv.forEach(([block, count], i) => {
       const slot = document.createElement('button');
-      slot.className = 'slot' + (i === selected ? ' sel' : '') + (count ? '' : ' empty');
+      slot.className = 'slot' + (i === selected ? ' sel' : '') + (count || block === AXE ? '' : ' empty');
       slot.title = itemName(block);
       const c = document.createElement('canvas');
       c.width = c.height = 40;
       drawItemIcon(c.getContext('2d'), block, 40);
       slot.append(c);
       const n = document.createElement('span');
-      n.textContent = count;
+      n.textContent = block === AXE ? '' : count;
       slot.append(n);
       slot.addEventListener('pointerdown', (e) => {
         e.stopPropagation();

@@ -79,9 +79,9 @@ export class Input {
 
   press(button, once = false) {
     if (button === 0) {
-      this.actions.dig();
+      // the action says how long until the next (an axe swings slower than a dig)
+      this.digTimer = this.actions.dig() || 0.28;
       this.digHeld = !once;
-      this.digTimer = 0.28;
     } else if (button === 2) this.actions.build();
   }
 
@@ -175,10 +175,7 @@ export class Input {
     }
     if (this.digHeld) {
       this.digTimer -= dt;
-      if (this.digTimer <= 0) {
-        this.digTimer = 0.28;
-        this.actions.dig();
-      }
+      if (this.digTimer <= 0) this.digTimer = this.actions.dig() || 0.28;
     }
     return {
       x,

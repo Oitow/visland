@@ -141,11 +141,11 @@ function cloudGeometry(seed) {
     for (let i = 0; i < CLOUD_CELLS; i++) {
       const v = field[j * CLOUD_CELLS + i];
       if (v < 0.58 || (i + j) % 2) continue;
-      const r = S * (0.9 + (v - 0.58) * 6),
+      const r = S * (0.75 + (v - 0.58) * 4),
         cx = i * S + latticeRandom(i, j, seed + 41) * S,
         cz = j * S + latticeRandom(i, j, seed + 42) * S;
       const tri = [];
-      for (let k = 0; k < src.count; k++) tri.push([cx + src.getX(k) * r, 2 + src.getY(k) * r * 0.38, cz + src.getZ(k) * r]);
+      for (let k = 0; k < src.count; k++) tri.push([cx + src.getX(k) * r, 2 + src.getY(k) * r * 0.32, cz + src.getZ(k) * r]);
       for (let k = 0; k < tri.length; k += 3) {
         const [a, b, c] = [tri[k], tri[k + 1], tri[k + 2]];
         const n = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]).cross(new THREE.Vector3(c[0] - a[0], c[1] - a[1], c[2] - a[2])).normalize();

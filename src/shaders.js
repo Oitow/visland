@@ -102,25 +102,32 @@ export function terrainMaterial() {
   });
 }
 
-// trees and lanterns: flat-shaded colours, lit softly, leaves swaying in the wind
-export function floraMaterial() {
+// how trees bend in the wind: the same for bark and leaves, so leaves stay on their twigs
+const SWAY = /* glsl */ `
+  uniform float uTime;
+  vec3 swayed(vec3 w, float s) {
+    return w + vec3(sin(uTime * 1.5 + w.x * 0.25 + w.z * 0.2), 0.0, cos(uTime * 1.2 + w.z * 0.25 + w.x * 0.1)) * 0.14 * s;
+  }
+`;
+
+// bark (and anything built of plain colours: lanterns, logs, the axe): lit softly, with a fine streaky grain
+export function woodMaterial() {
   return new THREE.ShaderMaterial({
     uniforms: U,
     side: THREE.DoubleSide,
     vertexShader: /* glsl */ `
       attribute vec3 aColor;
       attribute float aSway;
-      uniform float uTime;
-      varying vec3 vNormal, vColor, vWorld;
+      ${SWAY}
+      varying vec3 vNormal, vColor, vWorld, vLocal;
       varying float vDepth;
       void main() {
-        vec4 w = modelMatrix * vec4(position, 1.0);
-        vWorld = w.xyz;
-        w.x += sin(uTime * 1.6 + w.x * 0.4 + w.z * 0.3) * 0.12 * aSway;
-        w.z += cos(uTime * 1.3 + w.z * 0.4 + w.y * 0.2) * 0.1 * aSway;
-        vNormal = normal;
+        vec3 w = swayed((modelMatrix * vec4(position, 1.0)).xyz, aSway);
+        vWorld = w;
+        vLocal = position;
+        vNormal = normalize(mat3(modelMatrix) * normal);
         vColor = aColor;
-        vec4 mv = viewMatrix * w;
+        vec4 mv = viewMatrix * vec4(w, 1.0);
         vDepth = -mv.z;
         gl_Position = projectionMatrix * mv;
       }`,
@@ -128,12 +135,59 @@ export function floraMaterial() {
       uniform vec3 uSunDir, uSunColor, uAmbient;
       ${FOG}
       ${LAMPS}
-      varying vec3 vNormal, vColor, vWorld;
+      float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+      varying vec3 vNormal, vColor, vWorld, vLocal;
       varying float vDepth;
       void main() {
         vec3 n = normalize(vNormal) * (gl_FrontFacing ? 1.0 : -1.0);
-        float ndl = max(dot(n, uSunDir) * 0.7 + 0.3, 0.0);
-        gl_FragColor = vec4(fogged(vColor * (uAmbient + uSunColor * ndl + lampLight(vWorld, n)), vDepth), 1.0);
+        float ndl = max(dot(n, uSunDir) * 0.75 + 0.25, 0.0);
+        float grain = hash3(floor(vLocal * vec3(14.0, 3.0, 14.0))) - 0.5;
+        vec3 c = vColor * (1.0 + grain * 0.18);
+        gl_FragColor = vec4(fogged(c * (uAmbient + uSunColor * ndl + lampLight(vWorld, n)), vDepth), 1.0);
+      }`,
+  });
+}
+
+// leaves: cards cut out by the leaf picture's alpha, tinted per tree, light shining through them against the sun
+export function leafMaterial(atlas) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...U, uLeaves: { value: atlas } },
+    side: THREE.DoubleSide,
+    vertexShader: /* glsl */ `
+      attribute vec3 aColor;
+      attribute float aSway;
+      ${SWAY}
+      varying vec3 vNormal, vColor, vWorld;
+      varying vec2 vUv;
+      varying float vDepth;
+      void main() {
+        vec3 w = (modelMatrix * vec4(position, 1.0)).xyz;
+        w = swayed(w, aSway) + vec3(0.0, sin(uTime * 4.0 + w.x * 2.0 + w.z * 1.3) * 0.025 * aSway, 0.0);
+        vWorld = w;
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vColor = aColor;
+        vUv = uv;
+        vec4 mv = viewMatrix * vec4(w, 1.0);
+        vDepth = -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform sampler2D uLeaves;
+      uniform vec3 uSunDir, uSunColor, uAmbient, uCam;
+      ${FOG}
+      ${LAMPS}
+      varying vec3 vNormal, vColor, vWorld;
+      varying vec2 vUv;
+      varying float vDepth;
+      void main() {
+        vec4 t = texture2D(uLeaves, vUv);
+        if (t.a < 0.5) discard;
+        vec3 n = normalize(vNormal);
+        float ndl = max(dot(n, uSunDir) * 0.6 + 0.4, 0.0);
+        // light through the leaves when looking toward the sun
+        float through = pow(max(dot(normalize(vWorld - uCam), uSunDir), 0.0), 4.0) * 0.35;
+        vec3 c = vColor * t.r;
+        gl_FragColor = vec4(fogged(c * (uAmbient + uSunColor * (ndl + through) + lampLight(vWorld, n)), vDepth), 1.0);
       }`,
   });
 }
@@ -319,13 +373,13 @@ export function cloudMaterial() {
       uniform vec3 uCam;
       void main() {
         vec4 w = modelMatrix * vec4(position, 1.0);
-        vShade = 0.8 + 0.2 * normal.y;
+        vShade = 0.88 + 0.12 * normal.y;
         vFar = length(w.xz - uCam.xz);
         gl_Position = projectionMatrix * viewMatrix * w;
       }`,
     fragmentShader: /* glsl */ `
       uniform vec3 uCloud;
       varying float vShade, vFar;
-      void main() { gl_FragColor = vec4(uCloud * vShade, 0.82 * (1.0 - smoothstep(160.0, 300.0, vFar))); }`,
+      void main() { gl_FragColor = vec4(uCloud * vShade, 0.72 * (1.0 - smoothstep(160.0, 300.0, vFar))); }`,
   });
 }

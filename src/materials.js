@@ -10,6 +10,7 @@ export const DRYGRASS = 6;
 export const GRAVEL = 7;
 export const WOOD = 8;
 export const LANTERN = 100; // not a material: a thing to place (it is in the hotbar all the same)
+export const AXE = 101; // a tool: never used up
 
 // name (shown in the game), colour, the colour it shows where it is steep (grass gives way to earth on a slope),
 // and how coarse its grain is
@@ -24,7 +25,7 @@ export const MATERIALS = {
   [WOOD]: { name: 'Holz', color: '#8a6238', steep: '#7a5530', grain: 0.18 },
 };
 
-export const itemName = (id) => (id === LANTERN ? 'Laterne' : MATERIALS[id].name);
+export const itemName = (id) => (id === LANTERN ? 'Laterne' : id === AXE ? 'Axt' : MATERIALS[id].name);
 
 // what you get back from digging a material
 export const DROP = { [GRASS]: DIRT, [DRYGRASS]: DIRT };

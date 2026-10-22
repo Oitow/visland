@@ -40,8 +40,20 @@ export class Player {
     const w = this.world;
     for (const h of [0.4, 0.95, 1.55])
       for (const [dx, dz] of RING) if (w.solid(x + dx, y + h, z + dz)) return true;
-    for (const t of this.near)
-      for (const s of t.segs) if (s.r >= 0.17 && segDist([x, y + 0.9, z], s.a, s.b) < s.r + R && Math.min(s.a[1], s.b[1]) < y + TALL) return true;
+    // trunks (and stumps, up to where they were cut): at three heights of the body, how far from the trunk's middle
+    for (const tr of this.near) {
+      const top = tr.state === 'stump' ? tr.cutY : Infinity;
+      for (const s of tr.segs) {
+        if (!s.trunk) continue;
+        for (const h of [y + 0.3, y + 1.0, y + 1.6]) {
+          const lo = Math.min(s.a[1], s.b[1]),
+            hi = Math.min(Math.max(s.a[1], s.b[1]), top);
+          if (h < lo || h > hi) continue;
+          const f = (h - s.a[1]) / (s.b[1] - s.a[1] || 1);
+          if (Math.hypot(x - (s.a[0] + (s.b[0] - s.a[0]) * f), z - (s.a[2] + (s.b[2] - s.a[2]) * f)) < s.r + R) return true;
+        }
+      }
+    }
     return false;
   }
 
@@ -60,7 +72,7 @@ export class Player {
    */
   update(dt, input) {
     dt = Math.min(dt, 0.05);
-    this.near = this.world.trees.filter((t) => !t.removed && Math.abs(t.x - this.x) < 5 && Math.abs(t.z - this.z) < 5);
+    this.near = this.world.trees.filter((t) => (t.state === 'standing' || t.state === 'chopping' || t.state === 'stump') && Math.abs(t.x - this.x) < 5 && Math.abs(t.z - this.z) < 5);
     this.inWater = this.y + 0.5 < WATER_Y;
     const speed = this.inWater ? 3.2 : input.sprint ? 6.4 : 4.6;
     const sin = Math.sin(this.yaw),
@@ -154,13 +166,12 @@ export class Player {
     const things = [];
     for (const c of w.crystals) if (!c.found && near(c.x, c.z, 1)) things.push({ kind: 'crystal', thing: c, balls: [[c.x, c.y + 0.6, c.z, 0.7]] });
     for (const l of w.lanterns) if (near(l[0], l[2], 1)) things.push({ kind: 'lantern', thing: l, balls: [[l[0], l[1] + 0.6, l[2], 0.5]] });
-    for (const t of w.trees)
-      if (!t.removed && near(t.x, t.z, 6)) {
-        const balls = t.clumps.map((c) => [...c.c, c.r * 0.85]);
-        for (const c of t.cones || []) balls.push([c.c[0], c.c[1] + c.h * 0.3, c.c[2], c.r * 0.75]);
-        if (t.crown) balls.push([...t.crown, 1.6]);
-        things.push({ kind: 'tree', thing: t, balls, segs: t.segs });
-      }
+    for (const t of w.trees) {
+      if (!near(t.x, t.z, 7)) continue;
+      if (t.state === 'standing' || t.state === 'chopping')
+        things.push({ kind: 'tree', thing: t, balls: t.leaves.filter((l) => !l.nut).map((l) => [...l.c, l.r * 0.8]), segs: t.segs });
+      else if (t.state === 'stump') things.push({ kind: 'tree', thing: t, balls: [[t.x, t.y + 0.3, t.z, t.wood[0].r[0] + 0.25]] });
+    }
     let prev = 0;
     for (let t = 0.05; t <= reach; t += 0.05) {
       const p = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];

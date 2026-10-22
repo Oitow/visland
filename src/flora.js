@@ -1,159 +1,496 @@
-// Meshes for the things that stand on the ground: trees (from the shapes world.js grew with the almanac), crystals,
-// lanterns, and tufts of grass. All are built from code: cylinders, jittered balls, cones and ribbons.
+// Meshes for what stands on the ground, all built in code: trees (from the shapes trees.js grows) as bark tubes and
+// cards of leaves, the notch an axe cuts, stumps with growth rings, logs, crystals, lanterns, grass and the axe.
+// The leaves' picture is painted here too, on a canvas: broad leaves, birch leaves, pine needles, a palm frond.
 import * as THREE from 'three';
-import { hexToRgb } from '../vendor/almanac/colour.js';
+import { hexToRgb, mixColour } from '../vendor/almanac/colour.js';
 import { latticeRandom } from '../vendor/almanac/noise.js';
 import { SeededRandom } from '../vendor/almanac/random.js';
-
-// the ball every clump of leaves starts from (three triangles' corners each, not shared)
-const BALL = new THREE.IcosahedronGeometry(1, 1);
+import { SPECIES } from './trees.js';
 
 const rgb = (hex, k = 1) => hexToRgb(hex).map((v) => (v / 255) * k);
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = (a) => {
+  const l = Math.hypot(...a) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+const across = (a) => norm(cross(a, Math.abs(a[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
 
-// collects triangles with a normal, a colour and how much each vertex sways in the wind
+const FRESH = rgb('#dcbc8a'); // freshly cut wood
+const RING = rgb('#b8915e');
+
+// --- the leaves' picture --------------------------------------------------------------------------------------------
+
+export const LEAF_TILES = { broad: 0, birch: 1, needles: 2, frond: 3 };
+
+/** The leaf atlas: four 128-pixel tiles, white leaves (the tree's colour is laid over them) on transparent ground. */
+export function leafAtlas() {
+  const T = 128,
+    c = document.createElement('canvas');
+  c.width = T * 4;
+  c.height = T;
+  const g = c.getContext('2d');
+  const rng = new SeededRandom(4242);
+  const shade = (k) => `rgb(${Math.round(255 * k)},${Math.round(255 * k)},${Math.round(255 * k)})`;
+  const leaf = (x, y, len, wid, a, k) => {
+    g.save();
+    g.translate(x, y);
+    g.rotate(a);
+    g.fillStyle = shade(k);
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.quadraticCurveTo(wid, len * 0.45, 0, len);
+    g.quadraticCurveTo(-wid, len * 0.45, 0, 0);
+    g.fill();
+    g.strokeStyle = shade(k * 0.72);
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(0, 1);
+    g.lineTo(0, len * 0.9);
+    g.stroke();
+    g.restore();
+  };
+  // broad leaves: a heap, denser and lighter toward the middle
+  for (let i = 0; i < 70; i++) {
+    const a = rng.range(0, 6.28),
+      d = Math.sqrt(rng.next()) * 48;
+    leaf(64 + Math.cos(a) * d, 64 + Math.sin(a) * d, rng.range(15, 22), rng.range(5, 8), rng.range(0, 6.28), rng.range(0.62, 1) * (1 - d / 160));
+  }
+  // birch: small round leaves, scattered thinner
+  for (let i = 0; i < 70; i++) {
+    const a = rng.range(0, 6.28),
+      d = Math.sqrt(rng.next()) * 52;
+    leaf(T + 64 + Math.cos(a) * d, 64 + Math.sin(a) * d, rng.range(9, 13), rng.range(4, 6), rng.range(0, 6.28), rng.range(0.7, 1));
+  }
+  // needles: twigs with needles in pairs along them
+  g.lineCap = 'round';
+  for (let i = 0; i < 16; i++) {
+    const x0 = 2 * T + rng.range(14, 114),
+      y0 = rng.range(14, 114),
+      a = rng.range(0, 6.28),
+      len = rng.range(24, 44);
+    g.strokeStyle = shade(0.55);
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(x0, y0);
+    g.lineTo(x0 + Math.cos(a) * len, y0 + Math.sin(a) * len);
+    g.stroke();
+    g.lineWidth = 1.6;
+    for (let s = 2; s < len; s += 3)
+      for (const side of [-1, 1]) {
+        const px = x0 + Math.cos(a) * s,
+          py = y0 + Math.sin(a) * s,
+          na = a + side * 0.9;
+        g.strokeStyle = shade(rng.range(0.7, 1));
+        g.beginPath();
+        g.moveTo(px, py);
+        g.lineTo(px + Math.cos(na) * 9, py + Math.sin(na) * 9);
+        g.stroke();
+      }
+  }
+  // a palm frond: a rib down the middle, leaflets slanting out on both sides (v runs along the frond)
+  g.strokeStyle = shade(0.7);
+  g.lineWidth = 3;
+  g.beginPath();
+  g.moveTo(3 * T + 64, 0);
+  g.lineTo(3 * T + 64, T);
+  g.stroke();
+  g.lineWidth = 3;
+  for (let y = 2; y < T; y += 5)
+    for (const side of [-1, 1]) {
+      g.strokeStyle = shade(rng.range(0.72, 1));
+      g.beginPath();
+      g.moveTo(3 * T + 64, y);
+      g.lineTo(3 * T + 64 + side * rng.range(52, 62), y + 16);
+      g.stroke();
+    }
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  return tex;
+}
+
+// --- building blocks ------------------------------------------------------------------------------------------------
+
+// triangles with a normal, a colour, how much they sway, and (for leaves) where in the atlas they read
 class Builder {
   constructor() {
     this.pos = [];
     this.nor = [];
     this.col = [];
     this.sway = [];
+    this.uv = [];
   }
-  vert(p, n, c, s) {
+  vert(p, n, c, s, uv = [0, 0]) {
     this.pos.push(p[0], p[1], p[2]);
     this.nor.push(n[0], n[1], n[2]);
     this.col.push(c[0], c[1], c[2]);
     this.sway.push(s);
+    this.uv.push(uv[0], uv[1]);
   }
-  // a flat-shaded triangle
-  tri(a, b, c, color, s = [0, 0, 0]) {
-    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
-      v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-    const l = Math.hypot(...n) || 1;
-    n[0] /= l;
-    n[1] /= l;
-    n[2] /= l;
-    this.vert(a, n, color, s[0]);
-    this.vert(b, n, color, s[1]);
-    this.vert(c, n, color, s[2]);
+  flat(a, b, c, color, s = 0) {
+    const n = norm(cross(sub(b, a), sub(c, a)));
+    this.vert(a, n, color, s);
+    this.vert(b, n, color, s);
+    this.vert(c, n, color, s);
   }
-
-  // a tapering six-sided log from a to b
-  log(a, b, r, color, sway = 0) {
-    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    const len = Math.hypot(...d) || 1;
-    const ax = d.map((v) => v / len);
-    // two directions across the log
-    const up = Math.abs(ax[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
-    let u = cross(ax, up);
-    u = u.map((v) => v / Math.hypot(...u));
-    const w = cross(ax, u);
-    const S = 6,
-      r2 = r * 0.82;
-    for (let i = 0; i < S; i++) {
-      const t0 = (i / S) * Math.PI * 2,
-        t1 = ((i + 1) / S) * Math.PI * 2;
-      const o = (t, rr) => [Math.cos(t) * u[0] * rr + Math.sin(t) * w[0] * rr, Math.cos(t) * u[1] * rr + Math.sin(t) * w[1] * rr, Math.cos(t) * u[2] * rr + Math.sin(t) * w[2] * rr];
-      const p00 = add(a, o(t0, r)),
-        p10 = add(a, o(t1, r)),
-        p01 = add(b, o(t0, r2)),
-        p11 = add(b, o(t1, r2));
-      const shade = 0.88 + 0.12 * Math.cos(t0 * 3);
-      const c = color.map((v) => v * shade);
-      this.tri(p00, p10, p11, c, [0, 0, sway]);
-      this.tri(p00, p11, p01, c, [0, sway, sway]);
-    }
-  }
-
-  // a ball of leaves: an icosphere with its points pushed in and out, squashed by `flat`
-  clump(c, r, flat, color, seed) {
-    const p = BALL.attributes.position;
-    const pts = [];
-    for (let i = 0; i < p.count; i++) {
-      const x = p.getX(i),
-        y = p.getY(i),
-        z = p.getZ(i);
-      // the same jitter for the same point, so the ball stays closed
-      const j = 0.82 + 0.36 * latticeRandom(Math.round(x * 50) + Math.round(z * 31), Math.round(y * 50), seed);
-      pts.push([c[0] + x * r * j, c[1] + y * r * flat * j, c[2] + z * r * j]);
-    }
-    for (let i = 0; i < pts.length; i += 3) {
-      const k = 0.82 + 0.3 * latticeRandom(i, seed, 5);
-      const cc = color.map((v) => v * k);
-      this.tri(pts[i], pts[i + 1], pts[i + 2], cc, [1, 1, 1]);
-    }
-  }
-
-  cone(c, r, h, color, seed) {
-    const S = 7,
-      tip = [c[0], c[1] + h, c[2]];
-    for (let i = 0; i < S; i++) {
-      const t0 = (i / S) * Math.PI * 2 + seed,
-        t1 = ((i + 1) / S) * Math.PI * 2 + seed;
-      const a = [c[0] + Math.cos(t0) * r, c[1] - 0.25, c[2] + Math.sin(t0) * r],
-        b = [c[0] + Math.cos(t1) * r, c[1] - 0.25, c[2] + Math.sin(t1) * r];
-      const k = 0.85 + 0.25 * latticeRandom(i, Math.round(seed * 100), 9);
-      this.tri(a, tip, b, color.map((v) => v * k), [1, 0.6, 1]);
-      this.tri(a, b, [c[0], c[1] + 0.1, c[2]], color.map((v) => v * 0.6), [1, 1, 0.5]);
-    }
-  }
-
-  // a palm frond: a ribbon along a line, drawn from both sides
-  frond(line, color) {
-    for (let i = 0; i < line.length - 1; i++) {
-      const a = line[i],
-        b = line[i + 1];
-      const d = [b[0] - a[0], 0, b[2] - a[2]];
-      const l = Math.hypot(...d) || 1;
-      const side = [-d[2] / l, 0, d[0] / l];
-      const wa = 0.55 * Math.sin(((i + 0.3) / line.length) * Math.PI) + 0.05,
-        wb = 0.55 * Math.sin(((i + 1.3) / line.length) * Math.PI) + 0.05;
-      const a1 = add(a, side.map((v) => v * wa)),
-        a2 = add(a, side.map((v) => -v * wa)),
-        b1 = add(b, side.map((v) => v * wb)),
-        b2 = add(b, side.map((v) => -v * wb));
-      const s0 = i / line.length,
-        s1 = (i + 1) / line.length;
-      const c = color.map((v) => v * (i % 2 ? 0.92 : 1.05));
-      this.tri(a1, b1, b2, c, [s0, s1, s1]);
-      this.tri(a1, b2, a2, c, [s0, s1, s0]);
-      this.tri(b2, b1, a1, c, [s1, s1, s0]);
-      this.tri(a2, b2, a1, c, [s0, s1, s0]);
-    }
-  }
-
   geometry() {
+    if (!this.pos.length) return null;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('aColor', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('aSway', new THREE.Float32BufferAttribute(this.sway, 1));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
     g.computeBoundingSphere();
     return g;
   }
 }
 
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-
-const BARK = { leaf: '#5e4029', umbrella: '#6b5236', palm: '#9a7a52', pine: '#4f3622' };
-const LEAF = { leaf: '#3f8f37', umbrella: '#6e9a3c', palm: '#62b04a', pine: '#2a5e40' };
-
-// the mesh of every tree in a list (one chunk's)
-export function treesGeometry(trees) {
-  const b = new Builder();
-  for (const t of trees) {
-    if (t.removed) continue;
-    const leaf = rgb(LEAF[t.kind], 1 + t.hue * 0.08);
-    t.segs.forEach((s, i) => b.log(s.a, s.b, s.r, rgb(BARK[t.kind], t.kind === 'palm' && i % 2 ? 0.86 : 1), t.kind === 'palm' ? (i / t.segs.length) * 0.3 : 0));
-    for (const c of t.clumps) b.clump(c.c, c.r, c.flat, leaf, t.id * 13 + Math.round(c.c[1] * 7));
-    for (const c of t.cones || []) b.cone(c.c, c.r, c.h, leaf, t.id * 0.37);
-    for (const f of t.fronds || []) b.frond(f, leaf);
+/**
+ * A bark tube along points, a radius at each. `look(i, k, around)` gives each corner's colour; `dent(p, around)`
+ * pushes a corner in (the axe's notch) and returns how far.
+ */
+function tube(b, pts, rs, sides, look, swayOf, dent = null) {
+  let u = across(norm(sub(pts[1], pts[0])));
+  const rings = [];
+  for (let i = 0; i < pts.length; i++) {
+    const t = norm(sub(pts[Math.min(i + 1, pts.length - 1)], pts[Math.max(i - 1, 0)]));
+    u = norm(sub(u, mul(t, dot(t, u)))); // carried along the tube so it does not twist
+    const w = cross(t, u);
+    const ring = [];
+    for (let k = 0; k <= sides; k++) {
+      const a = (k / sides) * Math.PI * 2;
+      const n = add(mul(u, Math.cos(a)), mul(w, Math.sin(a)));
+      let p = add(pts[i], mul(n, rs[i]));
+      let cut = 0;
+      if (dent) {
+        cut = dent(pts[i], n, rs[i]);
+        p = sub(p, mul(n, cut));
+      }
+      ring.push({ p, n, c: cut > 0.02 ? FRESH : look(i, k % sides, a), s: swayOf(p) });
+    }
+    rings.push(ring);
   }
-  return b.pos.length === 0 ? null : b.geometry();
+  for (let i = 0; i < rings.length - 1; i++)
+    for (let k = 0; k < sides; k++) {
+      const a = rings[i][k],
+        c = rings[i][k + 1],
+        d = rings[i + 1][k + 1],
+        e = rings[i + 1][k];
+      for (const v of [a, d, c, a, e, d]) b.vert(v.p, v.n, v.c, v.s);
+    }
 }
 
-// a crystal: a cluster of long eight-sided points, lit from inside
+// a flat round cap facing n, in growth rings (the top of a stump, the end of a log)
+function rings(b, center, n, r, sides = 12) {
+  const u = across(n),
+    w = cross(n, u);
+  const at = (k, rr) => {
+    const a = (k / sides) * Math.PI * 2;
+    return add(center, add(mul(u, Math.cos(a) * rr), mul(w, Math.sin(a) * rr)));
+  };
+  const bands = [1, 0.72, 0.45, 0.2];
+  for (let j = 0; j < bands.length; j++) {
+    const c = j % 2 ? RING : FRESH;
+    for (let k = 0; k < sides; k++) {
+      const r0 = r * bands[j],
+        r1 = j + 1 < bands.length ? r * bands[j + 1] : 0;
+      const p0 = at(k, r0),
+        p1 = at(k + 1, r0),
+        q0 = at(k, r1),
+        q1 = at(k + 1, r1);
+      for (const p of [p0, p1, q1, p0, q1, q0]) b.vert(p, n, c, 0);
+    }
+  }
+}
+
+function barkLook(tree, depth) {
+  const sp = SPECIES[tree.kind];
+  const A = rgb(sp.bark),
+    B = rgb(sp.barkB);
+  return (i, k) => {
+    const r = latticeRandom(i * 7 + depth * 31, k, tree.id);
+    if (tree.kind === 'birch') return r < 0.16 && depth === 0 ? B : mixColour(A, rgb('#cfc9bc'), r * 0.6);
+    if (tree.kind === 'palm') return i % 2 ? B : A;
+    return mixColour(A, B, (k % 2) * 0.5 + r * 0.4);
+  };
+}
+
+// the trunk's points made dense near the foot, so a notch has room to show
+function denseTrunk(w, upTo) {
+  const pts = [],
+    rs = [];
+  for (let i = 0; i < w.pts.length - 1; i++) {
+    const a = w.pts[i],
+      b = w.pts[i + 1];
+    const steps = a[1] < upTo ? Math.max(1, Math.ceil((b[1] - a[1]) / 0.12)) : 1;
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps;
+      pts.push(add(a, mul(sub(b, a), t)));
+      rs.push(w.r[i] + (w.r[i + 1] - w.r[i]) * t);
+    }
+  }
+  pts.push(w.pts.at(-1));
+  rs.push(w.r.at(-1));
+  return { pts, rs };
+}
+
+// a trunk cut at height cutY: the part under it, or the part above it
+function cutTrunk(w, cutY, upper) {
+  const { pts, rs } = denseTrunk(w, cutY + 2);
+  const out = [],
+    outR = [];
+  for (let i = 0; i < pts.length; i++) if (upper ? pts[i][1] > cutY : pts[i][1] < cutY) (out.push(pts[i]), outR.push(rs[i]));
+  // the point exactly at the cut
+  for (let i = 0; i < pts.length - 1; i++)
+    if ((pts[i][1] - cutY) * (pts[i + 1][1] - cutY) <= 0) {
+      const t = (cutY - pts[i][1]) / (pts[i + 1][1] - pts[i][1] || 1);
+      const p = add(pts[i], mul(sub(pts[i + 1], pts[i]), t)),
+        r = rs[i] + (rs[i + 1] - rs[i]) * t;
+      if (upper) {
+        out.unshift(p);
+        outR.unshift(r);
+      } else {
+        out.push(p);
+        outR.push(r);
+      }
+      break;
+    }
+  return { pts: out, rs: outR };
+}
+
+// the cards of one cluster of leaves
+function leafCards(b, tree, leaf, tint, swayOf, rng) {
+  if (leaf.nut) {
+    // a coconut: a small brown ball
+    const g = new THREE.IcosahedronGeometry(leaf.r, 0).attributes.position;
+    for (let i = 0; i < g.count; i += 3) {
+      const p = [0, 1, 2].map((k) => [leaf.c[0] + g.getX(i + k), leaf.c[1] + g.getY(i + k), leaf.c[2] + g.getZ(i + k)]);
+      b.flat(p[0], p[1], p[2], rgb('#6b4a2a', 0.9 + 0.2 * rng.next()), swayOf(leaf.c));
+    }
+    return;
+  }
+  const tile = tree.kind === 'birch' ? LEAF_TILES.birch : tree.kind === 'pine' ? LEAF_TILES.needles : LEAF_TILES.broad;
+  const U = (u, v) => [(tile + u) / 4, v];
+  const card = (center, ax, ay, n, color, s) => {
+    const corners = [
+      add(center, add(mul(ax, -1), mul(ay, -1))),
+      add(center, add(ax, mul(ay, -1))),
+      add(center, add(ax, ay)),
+      add(center, add(mul(ax, -1), ay)),
+    ];
+    const uvs = [U(0, 0), U(1, 0), U(1, 1), U(0, 1)];
+    for (const k of [0, 1, 2, 0, 2, 3]) b.vert(corners[k], n, color, s, uvs[k]);
+  };
+  if (leaf.frond) {
+    // a palm frond: a ribbon along its line, widest in the middle, the frond picture running along it
+    const L = leaf.frond;
+    for (let i = 0; i < L.length - 1; i++) {
+      const a = L[i],
+        c = L[i + 1];
+      const side = norm(cross(sub(c, a), [0, 1, 0]));
+      const wa = 0.75 * Math.sin(((i + 0.2) / (L.length - 1)) * Math.PI) + 0.08,
+        wc = 0.75 * Math.sin(((i + 1) / (L.length - 1)) * Math.PI) + 0.08;
+      const n = norm(cross(side, sub(c, a)));
+      const v0 = i / (L.length - 1),
+        v1 = (i + 1) / (L.length - 1);
+      const T = LEAF_TILES.frond / 4;
+      const P = [add(a, mul(side, -wa)), add(a, mul(side, wa)), add(c, mul(side, wc)), add(c, mul(side, -wc))];
+      const UV = [
+        [T, v0],
+        [T + 0.25, v0],
+        [T + 0.25, v1],
+        [T, v1],
+      ];
+      const s0 = swayOf(a) + (i / L.length) * 0.6,
+        s1 = swayOf(c) + ((i + 1) / L.length) * 0.6;
+      const S = [s0, s0, s1, s1];
+      for (const k of [0, 1, 2, 0, 2, 3]) b.vert(P[k], n[1] < 0 ? mul(n, -1) : n, tint, S[k], UV[k]);
+    }
+    return;
+  }
+  if (leaf.along) {
+    // pine needles: cards lying along the branch, a little tilted
+    const [p0, p2] = leaf.along;
+    const dir = norm(sub(p2, p0)),
+      side = norm(cross(dir, [0, 1, 0]));
+    const len = Math.hypot(...sub(p2, p0));
+    for (let k = 0; k < 4; k++) {
+      const t = 0.25 + k * 0.22;
+      const c = add(add(p0, mul(sub(p2, p0), t)), [0, rng.range(-0.05, 0.1), 0]);
+      const tilt = rng.range(-0.35, 0.35);
+      const ay = mul(norm(add(side, [0, tilt, 0])), leaf.r * 0.75);
+      const ax = mul(dir, len * 0.22 + 0.25);
+      const n = norm(add(cross(ax, ay), [0, 0.6, 0]));
+      card(c, ax, ay, n[1] < 0 ? mul(n, -1) : n, mul(tint, rng.range(0.85, 1.1)), swayOf(c) + 0.15);
+    }
+    return;
+  }
+  // a broadleaf cluster: cards turned every way through a ball (flattened for a flat crown), shaded as if the
+  // cluster were one round lump, darker inside and underneath
+  const count = Math.max(5, Math.min(11, Math.round(leaf.r * 6)));
+  for (let k = 0; k < count; k++) {
+    const d = norm([rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1)]);
+    const reach = Math.cbrt(rng.next()) * leaf.r * 0.6;
+    const c = add(leaf.c, [d[0] * reach, d[1] * reach * leaf.flat, d[2] * reach]);
+    const facing = norm([rng.range(-1, 1), rng.range(-0.3, 1), rng.range(-1, 1)]);
+    const ax = mul(across(facing), leaf.r * 0.62),
+      ay = mul(cross(facing, norm(ax)), leaf.r * 0.62);
+    const n = norm(add(mul(sub(c, leaf.c), 1 / leaf.r), add(mul(norm(sub(leaf.c, tree.crown)), 0.6), [0, 0.5, 0])));
+    const inner = 0.72 + 0.28 * (reach / (leaf.r * 0.6)) + d[1] * 0.08;
+    card(c, ax, ay, n, mul(tint, inner * rng.range(0.92, 1.08)), swayOf(c) + 0.25);
+  }
+}
+
+// --- trees ----------------------------------------------------------------------------------------------------------
+
+function treeTint(tree) {
+  let c = rgb(SPECIES[tree.kind]?.leafTint || '#4f9a3c');
+  // now and then a broadleaf already turning: yellower, or toward red
+  const r = latticeRandom(tree.id, 3, 777);
+  if ((tree.kind === 'oak' || tree.kind === 'birch') && r < 0.14) c = mixColour(c, r < 0.05 ? rgb('#c8642c') : rgb('#d6b23a'), 0.65);
+  if (tree.kind === 'bush') c = rgb('#4a8c3a');
+  return mixColour(c, rgb('#9ac24a'), latticeRandom(tree.id, 9, 5) * 0.2);
+}
+
+/**
+ * The meshes of a tree, in world coordinates.
+ * @param {object} tree from trees.js (with id and state)
+ * @param {{part?: 'whole'|'stump'|'upper', notch?: {dir: number[], y: number, depth: number}}} [o]
+ * @returns {{wood: Builder, leaves: Builder}}
+ */
+function buildTree(tree, wb, lb, o = {}) {
+  const part = o.part || 'whole';
+  const rng = new SeededRandom(tree.id * 131 + 7);
+  const swayOf = (p) => {
+    const h = Math.max(0, (p[1] - tree.y) / Math.max(1, tree.height));
+    return part === 'whole' ? h * h * 0.9 : 0;
+  };
+  const cutY = tree.cutY ?? tree.y + 0.55;
+  for (const w of tree.wood) {
+    const look = barkLook(tree, w.depth);
+    const sides = w.depth === 0 ? 10 : w.depth === 1 ? 6 : w.depth === 2 ? 4 : 3;
+    if (w.depth === 0 && part !== 'whole') {
+      const { pts, rs } = cutTrunk(w, cutY, part === 'upper');
+      if (pts.length > 1) tube(wb, pts, rs, sides, look, swayOf);
+      // the cut face
+      const r = rs[part === 'upper' ? 0 : rs.length - 1];
+      const at = pts[part === 'upper' ? 0 : pts.length - 1];
+      if (at) rings(wb, at, part === 'upper' ? [0, -1, 0] : [0, 1, 0], r);
+      continue;
+    }
+    if (part === 'stump' && !w.root) continue;
+    if (part === 'upper' && w.root) continue;
+    if (w.depth === 0 && o.notch) {
+      // the notch: a wedge cut into the side the axe comes from, deeper with every blow
+      const { pts, rs } = denseTrunk(w, o.notch.y + 1);
+      const toward = mul(o.notch.dir, -1);
+      const dent = (p, n, r) => {
+        const v = Math.max(0, 1 - Math.abs(p[1] - o.notch.y) / 0.22);
+        const facing = Math.max(0, dot([n[0], 0, n[2]], toward));
+        return r * 0.95 * o.notch.depth * v * Math.sqrt(facing);
+      };
+      tube(wb, pts, rs, sides, look, swayOf, dent);
+      continue;
+    }
+    tube(wb, w.pts, w.r, sides, look, swayOf);
+  }
+  if (part === 'stump') return;
+  const tint = treeTint(tree);
+  for (const l of tree.leaves) leafCards(lb, tree, l, tint, swayOf, rng);
+}
+
+/** The meshes of every tree in a list (one chunk's): standing trees whole, felled ones as stumps. */
+export function treesGeometry(trees) {
+  const wb = new Builder(),
+    lb = new Builder();
+  for (const t of trees) {
+    if (t.state === 'standing') buildTree(t, wb, lb);
+    else if (t.state === 'stump') buildTree(t, wb, lb, { part: 'stump' });
+  }
+  return { wood: wb.geometry(), leaves: lb.geometry() };
+}
+
+/** One tree on its own (being chopped, or falling): whole with its notch, or the part above the cut. */
+export function singleTreeGeometry(tree, o) {
+  const wb = new Builder(),
+    lb = new Builder();
+  buildTree(tree, wb, lb, o);
+  return { wood: wb.geometry(), leaves: lb.geometry() };
+}
+
+/** A log lying on the ground, along x, centred on the origin, with rings at both ends. */
+export function logGeometry(len, r, kind) {
+  const b = new Builder();
+  const look = barkLook({ kind, id: Math.round(len * 100) }, 0);
+  tube(b, [[-len / 2, 0, 0], [0, 0, 0], [len / 2, 0, 0]], [r, r * 0.97, r * 0.94], 8, look, () => 0);
+  rings(b, [len / 2, 0, 0], [1, 0, 0], r * 0.94, 8);
+  rings(b, [-len / 2, 0, 0], [-1, 0, 0], r, 8);
+  return b.geometry();
+}
+
+/** The axe held in the hand: a wooden haft and an iron head, about 0.6 long, the haft along y. */
+export function axeGeometry() {
+  const b = new Builder();
+  tube(b, [[0, -0.32, 0], [0, 0, 0], [0, 0.3, 0]], [0.022, 0.024, 0.026], 6, (i, k) => rgb(k % 2 ? '#8a5f37' : '#9b6c40'), () => 0);
+  const iron = rgb('#9aa1a8'),
+    edge = rgb('#e8ecef'),
+    dark = rgb('#5d6268');
+  // the head: thick round the haft, thinning to a curved, bright edge that flares above and below
+  const W = 0.032; // half its thickness at the haft
+  const back = [
+    [-0.045, 0.22, -W],
+    [-0.045, 0.3, -W],
+    [-0.045, 0.3, W],
+    [-0.045, 0.22, W],
+  ];
+  const arc = [
+    [0.15, 0.14],
+    [0.18, 0.2],
+    [0.19, 0.26],
+    [0.18, 0.32],
+    [0.15, 0.37],
+  ];
+  const e = (k, side) => [arc[k][0], arc[k][1], side * 0.004];
+  const neck = (side, top) => [0.05, top ? 0.31 : 0.21, side * W * 0.7];
+  for (const side of [-1, 1]) {
+    // the flat of the blade: a fan from the neck to the edge
+    const z = side * W;
+    const quadSide = (a, c, d, f) => (side > 0 ? (b.flat(a, c, d, iron), b.flat(a, d, f, iron)) : (b.flat(a, d, c, iron), b.flat(a, f, d, iron)));
+    quadSide([-0.045, 0.22, z], [-0.045, 0.3, z], neck(side, true), neck(side, false));
+    for (let k = 0; k < arc.length - 1; k++) {
+      const a = neck(side, false),
+        c = neck(side, true);
+      const mid = k < 2 ? a : c;
+      if (side > 0) b.flat(mid, e(k, side), e(k + 1, side), iron);
+      else b.flat(mid, e(k + 1, side), e(k, side), iron);
+    }
+    if (side > 0) b.flat(neck(side, false), neck(side, true), e(2, side), iron);
+    else b.flat(neck(side, true), neck(side, false), e(2, side), iron);
+  }
+  // the bright edge, the back of the head, its top and bottom
+  for (let k = 0; k < arc.length - 1; k++) {
+    b.flat(e(k, -1), e(k, 1), e(k + 1, 1), edge);
+    b.flat(e(k, -1), e(k + 1, 1), e(k + 1, -1), edge);
+  }
+  b.flat(back[0], back[3], back[2], dark);
+  b.flat(back[0], back[2], back[1], dark);
+  b.flat(back[1], back[2], neck(1, true), dark);
+  b.flat(back[1], neck(1, true), neck(-1, true), dark);
+  b.flat(back[0], neck(-1, false), neck(1, false), dark);
+  b.flat(back[0], neck(1, false), back[3], dark);
+  b.flat(neck(1, true), e(4, 1), e(4, -1), iron);
+  b.flat(neck(1, true), e(4, -1), neck(-1, true), iron);
+  b.flat(neck(1, false), neck(-1, false), e(0, -1), iron);
+  b.flat(neck(1, false), e(0, -1), e(0, 1), iron);
+  return b.geometry();
+}
+
+// a crystal: a cluster of long six-sided points, lit from inside
 export function crystalMesh(material, id) {
   const rng = new SeededRandom(id * 977 + 3);
   const b = new Builder();
@@ -165,15 +502,15 @@ export function crystalMesh(material, id) {
       a = rng.range(0, Math.PI * 2);
     const base = k === 0 ? [0, 0, 0] : [Math.cos(a) * 0.25, 0, Math.sin(a) * 0.25];
     const ax = [Math.cos(a) * Math.sin(tilt), Math.cos(tilt), Math.sin(a) * Math.sin(tilt)];
-    const top = add(base, ax.map((v) => v * h)),
-      mid = add(base, ax.map((v) => v * h * 0.55));
+    const top = add(base, mul(ax, h)),
+      mid = add(base, mul(ax, h * 0.55));
     for (let i = 0; i < 6; i++) {
       const t0 = (i / 6) * Math.PI * 2,
         t1 = ((i + 1) / 6) * Math.PI * 2;
       const ring = (t) => add(mid, [Math.cos(t) * r, 0, Math.sin(t) * r]);
       const c = colors[(i + k) % 3];
-      b.tri(ring(t0), top, ring(t1), c);
-      b.tri(ring(t1), base, ring(t0), c.map((v) => v * 0.8));
+      b.flat(ring(t0), top, ring(t1), c);
+      b.flat(ring(t1), base, ring(t0), mul(c, 0.8));
     }
   }
   return new THREE.Mesh(b.geometry(), material);
@@ -183,7 +520,7 @@ export function crystalMesh(material, id) {
 export function lanternMesh(material, glowMaterial) {
   const b = new Builder();
   const wood = rgb('#4a3322');
-  b.log([0, -0.2, 0], [0, 0.55, 0], 0.07, wood);
+  tube(b, [[0, -0.2, 0], [0, 0.55, 0]], [0.07, 0.06], 6, () => wood, () => 0);
   const box = (x0, y0, z0, x1, y1, z1, c) => {
     const P = (x, y, z) => [x ? x1 : x0, y ? y1 : y0, z ? z1 : z0];
     const faces = [
@@ -195,8 +532,8 @@ export function lanternMesh(material, glowMaterial) {
       [P(1, 0, 0), P(0, 0, 0), P(0, 1, 0), P(1, 1, 0)],
     ];
     for (const [a, bb, cc, d] of faces) {
-      b.tri(a, bb, cc, c);
-      b.tri(a, cc, d, c);
+      b.flat(a, bb, cc, c);
+      b.flat(a, cc, d, c);
     }
   };
   box(-0.2, 0.55, -0.2, 0.2, 0.6, 0.2, wood);
@@ -210,10 +547,10 @@ export function lanternMesh(material, glowMaterial) {
 }
 
 // grass: a few thin blades, many copies placed by the ground's mesh
-export function tuftGeometry() {
+export function tuftGeometry(baseHex, tipHex) {
   const b = new Builder();
-  const base = rgb('#3f7f2c'),
-    tip = rgb('#9fd060');
+  const base = rgb(baseHex),
+    tip = rgb(tipHex);
   for (let k = 0; k < 4; k++) {
     const a = (k / 4) * Math.PI + 0.3,
       lean = 0.18 * (k % 2 ? 1 : -1);
@@ -221,14 +558,9 @@ export function tuftGeometry() {
     const p0 = [-c[0], 0, -c[2]],
       p1 = [c[0], 0, c[2]],
       top = [Math.cos(a + 1.57) * lean, 0.45 + (k % 3) * 0.08, Math.sin(a + 1.57) * lean];
-    for (const [x, y, z] of [
-      [p0, p1, top],
-      [p1, p0, top],
-    ]) {
-      b.vert(x, [0, 1, 0], base, 0);
-      b.vert(y, [0, 1, 0], base, 0);
-      b.vert(z, [0, 1, 0], tip, 1);
-    }
+    b.vert(p0, [0, 1, 0], base, 0);
+    b.vert(p1, [0, 1, 0], base, 0);
+    b.vert(top, [0, 1, 0], tip, 1);
   }
   return b.geometry();
 }
