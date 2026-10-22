@@ -129,29 +129,29 @@ export class Sky {
   }
 }
 
-// one field of clouds: a box per cell where the tiling noise is high, with the faces between boxes left out
+// one field of clouds: a squashed low-poly ball on every other cell where the tiling noise is high
 function cloudGeometry(seed) {
   const field = noiseTile(CLOUD_CELLS, 8, (x, y) => latticeRandom(x, y, seed + 40));
-  const on = (i, j) => field[((j + CLOUD_CELLS) % CLOUD_CELLS) * CLOUD_CELLS + ((i + CLOUD_CELLS) % CLOUD_CELLS)] > 0.6;
+  const ball = new THREE.IcosahedronGeometry(1, 0);
+  const src = ball.attributes.position;
   const pos = [],
     nor = [];
-  const quad = (p, n) => {
-    for (const k of [0, 1, 2, 0, 2, 3]) pos.push(...p[k]);
-    for (let k = 0; k < 6; k++) nor.push(...n);
-  };
-  const S = CLOUD_SIZE,
-    H = 4;
+  const S = CLOUD_SIZE;
   for (let j = 0; j < CLOUD_CELLS; j++)
     for (let i = 0; i < CLOUD_CELLS; i++) {
-      if (!on(i, j)) continue;
-      const x = i * S,
-        z = j * S;
-      quad([[x, H, z + S], [x + S, H, z + S], [x + S, H, z], [x, H, z]], [0, 1, 0]);
-      quad([[x, 0, z], [x + S, 0, z], [x + S, 0, z + S], [x, 0, z + S]], [0, -1, 0]);
-      if (!on(i + 1, j)) quad([[x + S, 0, z + S], [x + S, 0, z], [x + S, H, z], [x + S, H, z + S]], [1, 0, 0]);
-      if (!on(i - 1, j)) quad([[x, 0, z], [x, 0, z + S], [x, H, z + S], [x, H, z]], [-1, 0, 0]);
-      if (!on(i, j + 1)) quad([[x, 0, z + S], [x + S, 0, z + S], [x + S, H, z + S], [x, H, z + S]], [0, 0, 1]);
-      if (!on(i, j - 1)) quad([[x + S, 0, z], [x, 0, z], [x, H, z], [x + S, H, z]], [0, 0, -1]);
+      const v = field[j * CLOUD_CELLS + i];
+      if (v < 0.58 || (i + j) % 2) continue;
+      const r = S * (0.9 + (v - 0.58) * 6),
+        cx = i * S + latticeRandom(i, j, seed + 41) * S,
+        cz = j * S + latticeRandom(i, j, seed + 42) * S;
+      const tri = [];
+      for (let k = 0; k < src.count; k++) tri.push([cx + src.getX(k) * r, 2 + src.getY(k) * r * 0.38, cz + src.getZ(k) * r]);
+      for (let k = 0; k < tri.length; k += 3) {
+        const [a, b, c] = [tri[k], tri[k + 1], tri[k + 2]];
+        const n = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]).cross(new THREE.Vector3(c[0] - a[0], c[1] - a[1], c[2] - a[2])).normalize();
+        pos.push(...a, ...b, ...c);
+        for (let q = 0; q < 3; q++) nor.push(n.x, n.y, n.z);
+      }
     }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));

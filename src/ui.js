@@ -1,6 +1,6 @@
 // The screens over the game: the title with its seed, the HUD (crystals, clock, hotbar) and short messages.
-import { BLOCKS } from './blocks.js';
-import { drawIcon } from './textures.js';
+import { itemName } from './materials.js';
+import { drawItemIcon } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -41,15 +41,15 @@ export class UI {
     this.resume.classList.toggle('hidden', !playing);
   }
 
-  hotbarSet(inv, selected, atlas, onPick) {
+  hotbarSet(inv, selected, onPick) {
     this.hotbar.innerHTML = '';
     inv.forEach(([block, count], i) => {
       const slot = document.createElement('button');
       slot.className = 'slot' + (i === selected ? ' sel' : '') + (count ? '' : ' empty');
-      slot.title = BLOCKS[block].name;
+      slot.title = itemName(block);
       const c = document.createElement('canvas');
       c.width = c.height = 40;
-      drawIcon(c.getContext('2d'), atlas, block, 40);
+      drawItemIcon(c.getContext('2d'), block, 40);
       slot.append(c);
       const n = document.createElement('span');
       n.textContent = count;

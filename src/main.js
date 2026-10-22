@@ -1,12 +1,12 @@
-// Visland: a voxel island grown from a seed, made only of code. This file ties it together: it grows the island,
+// Visland: an island grown from a seed, made only of code. This file ties it together: it grows the island,
 // builds its meshes, runs the day, and turns the player's taps and keys into digging and building.
 import * as THREE from 'three';
 import { seedOf, seedWords } from '../vendor/almanac/seeds.js';
 import { World, SIZE, CHUNK, WATER_Y, SEA } from './world.js';
-import { AIR, BLOCKS, CRYSTAL, GRASS, DRYGRASS, DIRT, PLANKS, BRICK, GLASS, LANTERN } from './blocks.js';
-import { makeAtlas } from './textures.js';
-import { meshChunk } from './mesher.js';
-import { terrainMaterial, U } from './shaders.js';
+import { STONE, DIRT, WOOD, LANTERN, DROP, MATERIALS, itemName } from './materials.js';
+import { meshChunk } from './surfacenets.js';
+import { treesGeometry, crystalMesh, lanternMesh, tuftGeometry } from './flora.js';
+import { terrainMaterial, floraMaterial, tuftMaterial, glowMaterial, U } from './shaders.js';
 import { Sky } from './sky.js';
 import { Water } from './water.js';
 import { Birds } from './birds.js';
@@ -22,11 +22,12 @@ THREE.ColorManagement.enabled = false;
 const FIRST = ['bernstein', 'nebel', 'korallen', 'salz', 'moos', 'sturm', 'perlen', 'mond', 'sonnen', 'farn', 'glut', 'tang', 'kiesel', 'silber', 'wind', 'regen', 'feuer', 'eis', 'kristall', 'möwen', 'wal', 'muschel', 'lava', 'jade', 'zimt', 'honig', 'kupfer', 'schatten', 'sternen', 'dämmer', 'flut', 'gischt'];
 const SECOND = ['bucht', 'riff', 'insel', 'klippe', 'strand', 'lagune', 'gipfel', 'hain', 'düne', 'fels', 'hafen', 'kap', 'atoll', 'quelle', 'tal', 'grotte', 'wald', 'ufer', 'horn', 'mulde', 'steig', 'eiland', 'sund', 'heide'];
 const DAY_SECONDS = 480; // one whole day and night
+const DIG_R = 1.25; // how big a ball one dig takes out
+const BUILD_R = 1.1; // and one build heaps on
 const START_INV = [
-  [PLANKS, 48],
-  [BRICK, 48],
-  [GLASS, 24],
-  [LANTERN, 12],
+  [STONE, 24],
+  [DIRT, 24],
+  [LANTERN, 10],
 ];
 
 const ui = new UI();
@@ -40,19 +41,21 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(72, 1, 0.08, 700);
 camera.rotation.order = 'YXZ';
 
-const atlasCanvas = makeAtlas();
-const atlas = new THREE.CanvasTexture(atlasCanvas);
-atlas.magFilter = THREE.NearestFilter;
-atlas.minFilter = THREE.NearestFilter;
-atlas.generateMipmaps = false;
-const terrainMat = terrainMaterial(atlas);
+const terrainMat = terrainMaterial();
+const floraMat = floraMaterial();
+const tuftMat = tuftMaterial();
+const glowMat = glowMaterial();
+const lanternGlow = new THREE.MeshBasicMaterial({ color: 0xffd27a });
+const tuftGeos = { 2: tuftGeometry('#3f7f2c', '#9fd060'), 6: tuftGeometry('#8a7a36', '#e2cc78') };
 
-const outline = new THREE.LineSegments(
-  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)),
-  new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.55 }),
+// the ring that shows where a dig or a build will land
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(DIG_R - 0.12, DIG_R, 40),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }),
 );
-outline.visible = false;
-scene.add(outline);
+ring.visible = false;
+ring.renderOrder = 12;
+scene.add(ring);
 
 // everything that belongs to one island
 let game = null;
@@ -67,11 +70,14 @@ resize();
 
 function disposeIsland() {
   if (!game) return;
-  for (const m of game.chunks.values()) {
-    scene.remove(m);
-    m.geometry.dispose();
-  }
+  for (const c of game.chunks.values())
+    for (const m of [c.ground, c.trees, ...c.tufts]) {
+      if (!m) continue;
+      scene.remove(m);
+      m.geometry.dispose();
+    }
   for (const o of game.extras) scene.remove(o);
+  for (const o of game.things.values()) scene.remove(o);
   game = null;
 }
 
@@ -81,23 +87,21 @@ function growIsland(name) {
   const world = new World(seed);
   world.generate();
   const saved = store.load(seed);
-  const edits = new Map(saved?.edits || []);
-  for (const [i, b] of edits) {
-    const x = i % SIZE,
-      z = Math.floor(i / SIZE) % SIZE,
-      y = Math.floor(i / (SIZE * SIZE));
-    world.set(x, y, z, b);
-  }
+  // the player's changes, laid again over the island as it grew
+  for (const [kind, x, y, z, r, m] of saved?.ops || []) world.brush(x, y, z, r, kind === 'b', m);
+  for (const id of saved?.trees || []) if (world.trees[id]) world.trees[id].removed = true;
+  for (const id of saved?.found || []) if (world.crystals[id]) world.crystals[id].found = true;
+  world.lanterns = saved?.lanterns || [];
   const g = {
     name,
     seed,
     world,
-    edits,
+    ops: saved?.ops || [],
     chunks: new Map(),
+    things: new Map(), // crystal and lantern meshes
     extras: [],
     inv: saved?.inv || START_INV.map((s) => [...s]),
     selected: 0,
-    found: new Set(saved?.found || []),
     t: saved?.t ?? 0.3,
     time: 0,
     player: new Player(world),
@@ -105,103 +109,193 @@ function growIsland(name) {
     saveTimer: 0,
   };
   if (saved?.pos) [g.player.x, g.player.y, g.player.z, g.player.yaw, g.player.pitch] = saved.pos;
-  for (let cz = 0; cz < SIZE / CHUNK; cz++) for (let cx = 0; cx < SIZE / CHUNK; cx++) remesh(g, cx, cz);
+  g.treesIn = new Map();
+  for (const t of world.trees) {
+    const k = Math.floor(t.x / CHUNK) + ',' + Math.floor(t.z / CHUNK);
+    if (!g.treesIn.has(k)) g.treesIn.set(k, []);
+    g.treesIn.get(k).push(t);
+  }
+  game = g;
+  for (let cz = 0; cz < SIZE / CHUNK; cz++)
+    for (let cx = 0; cx < SIZE / CHUNK; cx++) {
+      remeshGround(g, cx, cz);
+      remeshTrees(g, cx, cz);
+    }
+  for (const c of world.crystals) if (!c.found) addThing(g, c);
+  for (const l of world.lanterns) addThing(g, l);
   g.water = new Water(scene, world);
   g.sky = new Sky(scene, seed);
   g.birds = new Birds(scene, seed);
   g.extras.push(g.water.mesh, g.sky.dome, g.sky.stars, ...g.sky.clouds, ...g.birds.meshes);
   // at night, a beam of light stands over every crystal not yet found
-  g.beams = world.crystals.map(([x, y, z]) => {
+  g.beams = world.crystals.map((c) => {
     const m = new THREE.Mesh(
       new THREE.BoxGeometry(0.5, 60, 0.5),
-      new THREE.MeshBasicMaterial({ color: 0xa8e8ff, transparent: true, opacity: 0, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }),
+      new THREE.MeshBasicMaterial({ color: 0xa8e8ff, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }),
     );
-    m.position.set(x + 0.5, y + 30.5, z + 0.5);
-    m.userData.idx = world.idx(x, y, z);
+    m.position.set(c.x, c.y + 30.5, c.z);
+    m.userData.crystal = c;
     m.renderOrder = 11;
     scene.add(m);
     g.extras.push(m);
     return m;
   });
-  game = g;
   ui.seedLabel.textContent = name;
   updateCrystals();
   refreshHotbar();
 }
 
-function remesh(g, cx, cz) {
+function chunkOf(g, cx, cz) {
+  const k = cx + ',' + cz;
+  if (!g.chunks.has(k)) g.chunks.set(k, { ground: null, trees: null, tufts: [] });
+  return g.chunks.get(k);
+}
+
+function remeshGround(g, cx, cz) {
   if (cx < 0 || cz < 0 || cx >= SIZE / CHUNK || cz >= SIZE / CHUNK) return;
-  const key = cx + ',' + cz;
-  const old = g.chunks.get(key);
+  const c = chunkOf(g, cx, cz);
   const data = meshChunk(g.world, cx, cz);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(data.position, 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(data.normal, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(data.uv, 2));
+  geo.setAttribute('aColor', new THREE.BufferAttribute(data.color, 3));
   geo.setAttribute('aLight', new THREE.BufferAttribute(data.light, 3));
   geo.setIndex(new THREE.BufferAttribute(data.index, 1));
   geo.computeBoundingSphere();
-  if (old) {
-    old.geometry.dispose();
-    old.geometry = geo;
+  if (c.ground) {
+    c.ground.geometry.dispose();
+    c.ground.geometry = geo;
   } else {
-    const m = new THREE.Mesh(geo, terrainMat);
-    g.chunks.set(key, m);
-    scene.add(m);
+    c.ground = new THREE.Mesh(geo, terrainMat);
+    scene.add(c.ground);
+  }
+  // grass grows again where the mesh says there is open meadow: three tufts round each spot
+  for (const m of c.tufts) {
+    scene.remove(m);
+    m.dispose();
+  }
+  c.tufts = [];
+  for (const kind of [2, 6]) {
+    const spots = data.tufts.filter((s) => s[3] === kind);
+    if (!spots.length) continue;
+    const mesh = new THREE.InstancedMesh(tuftGeos[kind], tuftMat, spots.length * 3);
+    const o = new THREE.Object3D();
+    let i = 0;
+    for (const [x, y, z, , v] of spots)
+      for (let k = 0; k < 3; k++) {
+        const a = (v * 40 + k * 2.1) % (Math.PI * 2);
+        o.position.set(x + Math.cos(a) * 0.4, y - 0.08, z + Math.sin(a) * 0.4);
+        o.rotation.set(0, a * 3, 0);
+        o.scale.setScalar(0.8 + ((k * 0.37 + v * 3) % 0.5));
+        o.updateMatrix();
+        mesh.setMatrixAt(i++, o.matrix);
+      }
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+    c.tufts.push(mesh);
   }
 }
 
-// a block changed: mesh again the chunks it shows in (and, if it glows or glowed, all its light reaches)
-function changed(x, y, z, before, after) {
+function remeshTrees(g, cx, cz) {
+  const c = chunkOf(g, cx, cz);
+  if (c.trees) {
+    scene.remove(c.trees);
+    c.trees.geometry.dispose();
+    c.trees = null;
+  }
+  const geo = treesGeometry(g.treesIn.get(cx + ',' + cz) || []);
+  if (geo) {
+    c.trees = new THREE.Mesh(geo, floraMat);
+    scene.add(c.trees);
+  }
+}
+
+// a crystal ({x, y, z, id}) or a lantern ([x, y, z]) in the scene
+function addThing(g, thing) {
+  const m = Array.isArray(thing) ? lanternMesh(floraMat, lanternGlow) : crystalMesh(glowMat, thing.id);
+  const [x, y, z] = Array.isArray(thing) ? thing : [thing.x, thing.y, thing.z];
+  m.position.set(x, y - 0.1, z);
+  scene.add(m);
+  g.things.set(thing, m);
+}
+
+function removeThing(g, thing) {
+  scene.remove(g.things.get(thing));
+  g.things.delete(thing);
+}
+
+// the ground changed in a ball: mesh again every chunk it (or a light it holds) reaches, and the sea's depth there
+function changed(x, y, z, r) {
   const g = game;
-  const r = Math.max(BLOCKS[before].light || 0, BLOCKS[after].light || 0) || 1;
-  for (let cx = Math.floor((x - r) / CHUNK); cx <= Math.floor((x + r) / CHUNK); cx++)
-    for (let cz = Math.floor((z - r) / CHUNK); cz <= Math.floor((z + r) / CHUNK); cz++) remesh(g, cx, cz);
-  g.water.changed(x, z);
-  g.edits.set(g.world.idx(x, y, z), after);
+  for (let cx = Math.floor((x - r - 1) / CHUNK); cx <= Math.floor((x + r + 1) / CHUNK); cx++)
+    for (let cz = Math.floor((z - r - 1) / CHUNK); cz <= Math.floor((z + r + 1) / CHUNK); cz++) remeshGround(g, cx, cz);
+  const w = Math.ceil(Math.min(r, 3));
+  for (let dz = -w; dz <= w; dz++) for (let dx = -w; dx <= w; dx++) g.water.changed(Math.round(x) + dx, Math.round(z) + dz);
   g.saveTimer = Math.min(g.saveTimer, 1);
 }
 
 function updateCrystals() {
-  const g = game;
-  ui.crystals.textContent = `◆ ${g.found.size}/${g.world.crystals.length}`;
+  const c = game.world.crystals;
+  ui.crystals.textContent = `◆ ${c.filter((k) => k.found).length}/${c.length}`;
 }
 
 function refreshHotbar() {
-  ui.hotbarSet(game.inv, game.selected, atlasCanvas, (i) => select(i));
+  ui.hotbarSet(game.inv, game.selected, (i) => select(i));
 }
 
 function select(i) {
   if (!game || i < 0 || i >= game.inv.length) return;
   game.selected = i;
   refreshHotbar();
-  ui.nameShow(`${BLOCKS[game.inv[i][0]].name} (${game.inv[i][1]})`);
+  ui.nameShow(`${itemName(game.inv[i][0])} (${game.inv[i][1]})`);
 }
 
-function give(block) {
-  const slot = game.inv.find(([b]) => b === block);
-  if (slot) slot[1]++;
-  else game.inv.push([block, 1]);
+function give(item, n = 1) {
+  const slot = game.inv.find(([b]) => b === item);
+  if (slot) slot[1] += n;
+  else game.inv.push([item, n]);
   refreshHotbar();
 }
+
+const round2 = (v) => Math.round(v * 100) / 100;
 
 function dig() {
   const g = game;
   if (!g?.playing) return;
   const hit = g.player.target();
-  if (!hit || BLOCKS[hit.block].unbreakable) return;
-  const { x, y, z, block } = hit;
-  g.world.set(x, y, z, AIR);
-  changed(x, y, z, block, AIR);
-  if (block === CRYSTAL) {
-    g.found.add(g.world.idx(x, y, z));
+  if (!hit) return;
+  const w = g.world;
+  if (hit.kind === 'crystal') {
+    const c = hit.thing;
+    c.found = true;
+    removeThing(g, c);
     updateCrystals();
     sound.chime();
-    const all = g.found.size >= g.world.crystals.length;
-    ui.toastShow(all ? `Alle Kristalle von ${g.name} gefunden! ✨` : `Kristall gefunden! ${g.found.size}/${g.world.crystals.length}`, all ? 6 : 3);
-  } else {
+    const n = w.crystals.filter((k) => k.found).length,
+      all = n >= w.crystals.length;
+    ui.toastShow(all ? `Alle Kristalle von ${g.name} gefunden! ✨` : `Kristall gefunden! ${n}/${w.crystals.length}`, all ? 6 : 3);
+  } else if (hit.kind === 'lantern') {
+    w.lanterns = w.lanterns.filter((l) => l !== hit.thing);
+    removeThing(g, hit.thing);
+    give(LANTERN);
+    sound.build();
+  } else if (hit.kind === 'tree') {
+    const t = hit.thing;
+    t.removed = true;
+    remeshTrees(g, Math.floor(t.x / CHUNK), Math.floor(t.z / CHUNK));
+    give(WOOD, 3 + Math.round(t.segs.length / 3));
     sound.dig();
-    give(block === GRASS || block === DRYGRASS ? DIRT : block);
+    ui.nameShow(`Holz (${g.inv.find(([b]) => b === WOOD)[1]})`);
+  } else {
+    const [x, y, z] = hit.point.map(round2);
+    const took = w.brush(x, y, z, DIG_R, false);
+    if (!took.size) return;
+    g.ops.push(['d', x, y, z, DIG_R]);
+    // what was dug out: the material most of it was made of
+    const [mat, n] = [...took].sort((a, b) => b[1] - a[1])[0];
+    give(DROP[mat] || mat, Math.max(1, Math.round(n / 4)));
+    changed(x, y, z, DIG_R);
+    sound.dig();
   }
 }
 
@@ -210,11 +304,21 @@ function build() {
   if (!g?.playing) return;
   const hit = g.player.target();
   const slot = g.inv[g.selected];
-  if (!hit || !slot || slot[1] <= 0) return;
-  const { px, py, pz } = hit;
-  if (g.world.get(px, py, pz) !== AIR || g.player.overlaps(px, py, pz) || py >= 63) return;
-  g.world.set(px, py, pz, slot[0]);
-  changed(px, py, pz, AIR, slot[0]);
+  if (!hit || hit.kind !== 'ground' || !slot || slot[1] <= 0) return;
+  const w = g.world;
+  if (slot[0] === LANTERN) {
+    if (hit.normal[1] < 0.4) return ui.nameShow('Laternen brauchen ebenen Boden');
+    const l = hit.point.map(round2);
+    w.lanterns.push(l);
+    addThing(g, l);
+    g.saveTimer = Math.min(g.saveTimer, 1);
+  } else {
+    const c = hit.point.map((v, k) => round2(v + hit.normal[k] * BUILD_R * 0.55));
+    if (g.player.touches(c, BUILD_R)) return;
+    w.brush(c[0], c[1], c[2], BUILD_R, true, slot[0]);
+    g.ops.push(['b', c[0], c[1], c[2], BUILD_R, slot[0]]);
+    changed(c[0], c[1], c[2], BUILD_R);
+  }
   slot[1]--;
   sound.build();
   refreshHotbar();
@@ -230,11 +334,14 @@ const input = new Input(renderer.domElement, ui, {
 function persist() {
   const g = game;
   if (!g) return;
+  const w = g.world;
   store.save(g.seed, {
     name: g.name,
-    edits: [...g.edits],
+    ops: g.ops,
+    trees: w.trees.filter((t) => t.removed).map((t) => t.id),
+    found: w.crystals.filter((c) => c.found).map((c) => c.id),
+    lanterns: w.lanterns,
     inv: g.inv,
-    found: [...g.found],
     pos: [g.player.x, g.player.y, g.player.z, g.player.yaw, g.player.pitch],
     t: g.t,
   });
@@ -295,8 +402,8 @@ function enterGame() {
   input.enabled = true;
   ui.showMenu(false);
   ui.help.textContent = touch
-    ? 'Links: laufen · Rechts wischen: schauen · ⛏ abbauen · ▣ bauen'
-    : 'Klicken zum Steuern · WASD laufen · Maus schauen · Linksklick abbauen · Rechtsklick bauen · 1–9 / Mausrad: Block · M: Menü';
+    ? 'Links: laufen · Rechts wischen: schauen · ⛏ graben · ▣ bauen'
+    : 'Klicken zum Steuern · WASD laufen · Maus schauen · Linksklick graben · Rechtsklick bauen · 1–9 / Mausrad: Material · M: Menü';
   // the controls after the welcome, so the two notes never cover each other
   clearTimeout(helpTimer);
   helpTimer = setTimeout(() => {
@@ -329,20 +436,24 @@ function frame(now) {
     camera.position.set(p.x, p.eyeY, p.z);
     camera.rotation.set(p.pitch, p.yaw, 0);
     const hit = p.target();
-    outline.visible = !!hit;
-    if (hit) {
-      outline.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
-      const k = `${hit.x},${hit.y},${hit.z}`;
-      if (k !== lastTarget && hit.block === CRYSTAL) ui.nameShow('Kristall – abbauen zum Einsammeln');
-      lastTarget = k;
+    ring.visible = hit?.kind === 'ground';
+    if (ring.visible) {
+      const [x, y, z] = hit.point,
+        n = hit.normal;
+      ring.position.set(x + n[0] * 0.06, y + n[1] * 0.06, z + n[2] * 0.06);
+      ring.lookAt(x + n[0], y + n[1], z + n[2]);
     }
+    const k = hit ? hit.kind + (hit.thing?.id ?? '') : '';
+    if (k !== lastTarget && hit && hit.kind !== 'ground')
+      ui.nameShow({ crystal: 'Kristall · abbauen zum Einsammeln', tree: 'Baum · fällen für Holz', lantern: 'Laterne · abbauen zum Mitnehmen' }[hit.kind]);
+    lastTarget = k;
     if ((g.saveTimer -= dt) <= 0) {
       g.saveTimer = 5;
       persist();
     }
   } else {
     // the title: the camera circles the island
-    outline.visible = false;
+    ring.visible = false;
     const a = g.time * 0.05;
     camera.position.set(SIZE / 2 + Math.cos(a) * 125, 58, SIZE / 2 + Math.sin(a) * 125);
     camera.lookAt(SIZE / 2, 14, SIZE / 2);
@@ -355,13 +466,20 @@ function frame(now) {
   g.birds.update(dt, g.time, p, day);
   const night = Math.max(0, Math.min(1, (day.night - 0.3) / 0.5));
   for (const b of g.beams) {
-    b.visible = !g.found.has(b.userData.idx) && night > 0;
-    b.material.opacity = 0.22 * night * (0.8 + 0.2 * Math.sin(g.time * 2 + b.userData.idx));
+    b.visible = !b.userData.crystal.found && night > 0;
+    b.material.opacity = 0.22 * night * (0.8 + 0.2 * Math.sin(g.time * 2 + b.userData.crystal.id));
   }
+  for (const [thing, m] of g.things) if (!Array.isArray(thing)) m.rotation.y = g.time * 0.4 + thing.id;
+  // the eight lights nearest the camera light the scene
+  const lamps = g.world
+    .lights()
+    .map((l) => [l, (l[0] - camera.position.x) ** 2 + (l[2] - camera.position.z) ** 2])
+    .sort((a, b) => a[1] - b[1]);
+  U.uLamps.value.forEach((v, i) => (lamps[i] ? v.set(...lamps[i][0]) : v.set(0, -1000, 0, 1)));
   ui.setClock(g.t);
   if (g.playing) {
     // the sea is louder the nearer the water is
-    const ground = g.world.ground[Math.floor(p.z) * SIZE + Math.floor(p.x)] ?? SEA;
+    const ground = g.world.heights[Math.floor(p.z) * SIZE + Math.floor(p.x)] ?? SEA;
     sound.sea(Math.max(0, Math.min(1, 1 - (ground - SEA) / 10)), g.time);
   }
   renderer.render(scene, camera);

@@ -1,7 +1,8 @@
 // What is kept between visits, per island: only what the player changed (the island itself grows again from its
 // seed), what they carry, the crystals found, where they stood and the time of day. Kept in this browser only.
 
-const key = (seed) => `visland:${seed}`;
+// (version 2: the smooth ground, saved as the digs and builds that changed it)
+const key = (seed) => `visland2:${seed}`;
 
 export function load(seed) {
   try {

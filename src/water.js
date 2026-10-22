@@ -24,7 +24,7 @@ export class Water {
   // the depth at a column, 0 (at the surface or above it) to 1 (12 blocks down or more)
   column(x, z) {
     const floor = this.world.floorY(x, z);
-    const depth = Math.max(0, Math.min(1, (WATER_Y - (floor + 1)) / 12));
+    const depth = Math.max(0, Math.min(1, (WATER_Y - floor) / 12));
     this.data[(z * SIZE + x) * 4] = Math.round(depth * 255);
     this.data[(z * SIZE + x) * 4 + 3] = 255;
   }
