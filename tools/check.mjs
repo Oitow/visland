@@ -1,7 +1,7 @@
 // Quick checks that need no browser: the same seed grows the same island, every island has its crystals and a
 // place to stand, its ground meshes, digging takes ground away, and the player stands and walks on it.
 // Run with: npm run check
-import { World, SIZE, CHUNK, CRYSTALS, WATER_Y } from '../src/world.js';
+import { World, SIZE, CHUNK, CRYSTALS, WATER_Y, VOX, NY } from '../src/world.js';
 import { meshChunk } from '../src/surfacenets.js';
 import { Player } from '../src/player.js';
 import { seedOf } from '../vendor/almanac/seeds.js';
@@ -12,7 +12,14 @@ const check = (ok, what) => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
   if (!ok) failed++;
 };
-const digest = (w) => w.density.reduce((h, v, i) => (v > 0 ? hash32(h ^ (i * 31 + w.mat[i])) : h), 7);
+const digest = (w) => {
+  let h = 7;
+  w.dense.forEach((a, b) => {
+    h = hash32(h ^ (b * 31 + w.uni[b]));
+    if (a) for (let i = 0; i < a.length; i += 7) h = hash32(h ^ (a[i] * 131 + i));
+  });
+  return h;
+};
 
 for (const name of ['nebel-bucht-7', 'koralle-riff-3', 'sturm-kap-91', 'lava-klippe-47', '12345']) {
   const t0 = performance.now();
@@ -96,9 +103,10 @@ for (const [deg, stays] of [
 ]) {
   const f = new World(1);
   const k = Math.tan((deg * Math.PI) / 180);
-  for (let z = 0; z < SIZE; z++)
-    for (let x = 0; x < SIZE; x++)
-      for (let y = 0; y < 64; y++) f.density[f.idx(x, y, z)] = Math.max(-4, Math.min(4, (20 + (x - 80) * k - y) / Math.hypot(1, k)));
+  f.uni.fill(-124); // air, but for a patch round the middle
+  for (let k2 = 120; k2 < 200; k2++)
+    for (let i = 120; i < 200; i++)
+      for (let j = 0; j < NY; j++) f.set(i, j, k2, (20 + (i * VOX - 80) * k - j * VOX) / Math.hypot(1, k), 4);
   f.spawn = [80.5, 20.6 + 0.5 * k, 80.5];
   const s = new Player(f);
   for (let i = 0; i < 180; i++) s.update(1 / 60, { x: 0, z: 0, jump: false });
@@ -120,7 +128,9 @@ for (const [deg, stays] of [
   const page = new World(seed);
   page.generate();
   page.brush(80, 18, 80, 1.25, false);
-  check(page.density.every((v, i) => v === world.density[i]) && world.trees[3].state === 'stump', 'the worker sends the same world the page would grow, with the saved changes');
+  const sent = new World(seed);
+  sent.unpack(world.pack);
+  check(digest(page) === digest(sent) && world.trees[3].state === 'stump', 'the worker sends the same world the page would grow, with the saved changes');
   got.length = 0;
   job({ type: 'brush', gen: 1, x: 40, y: 15, z: 40, r: 1.25, add: false, chunks: [[2, 2]] });
   job({ type: 'brush', gen: 0, x: 40, y: 15, z: 40, r: 1.25, add: false, chunks: [[2, 2]] });

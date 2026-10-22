@@ -4,7 +4,8 @@
 // both copies stay the same.
 //
 // Messages in:  grow {gen, seed, ops, trees, focus}  ·  brush {gen, x, y, z, r, add, mat, chunks}  ·  tree {gen, id, state, cutY}
-// Messages out: world {gen, density, mat, heights, trees, crystals, spawn}  ·  ground {gen, cx, cz, mesh}  ·  trees {gen, cx, cz, wood, leaves}
+//                focus {gen, x, z}: where the player is, so chunks near them are meshed finely and far ones coarsely
+// Messages out: world {gen, pack, trees, crystals, spawn}  ·  ground {gen, cx, cz, mesh}  ·  trees {gen, cx, cz, wood, leaves}
 import { World, SIZE, CHUNK } from './world.js';
 import { meshChunk } from './surfacenets.js';
 import { treesGeometry } from './flora.js';
@@ -14,12 +15,23 @@ const buffers = (arrays) => (arrays ? Object.values(arrays).filter((v) => v?.buf
 /** @param {function(object, ArrayBuffer[]): void} post sends a message (and hands over the buffers it lists) */
 export function createJob(post) {
   let world = null,
-    gen = 0;
+    gen = 0,
+    focus = [SIZE / 2, SIZE / 2];
   const treesIn = new Map();
+  const stride = new Map(); // how finely each chunk is meshed now: 1 near the player, 2 far off
+  const NEAR = 36,
+    FAR = 44; // (between the two a chunk keeps what it has, so it does not flicker back and forth)
+  const want = (cx, cz) => {
+    const dist = Math.hypot((cx + 0.5) * CHUNK - focus[0], (cz + 0.5) * CHUNK - focus[1]);
+    const now = stride.get(cx + ',' + cz);
+    return dist < NEAR ? 1 : dist > FAR ? 2 : now || 1;
+  };
 
   const ground = (cx, cz) => {
     if (cx < 0 || cz < 0 || cx >= SIZE / CHUNK || cz >= SIZE / CHUNK) return;
-    const mesh = meshChunk(world, cx, cz);
+    const s = want(cx, cz);
+    stride.set(cx + ',' + cz, s);
+    const mesh = meshChunk(world, cx, cz, s);
     post({ type: 'ground', gen, cx, cz, mesh }, buffers(mesh));
   };
   const trees = (cx, cz) => {
@@ -45,12 +57,13 @@ export function createJob(post) {
         treesIn.get(k).push(t);
       }
       // the page gets a copy of the world to walk on; this one stays here for meshing
-      const density = world.density.slice(),
-        mat = world.mat.slice(),
-        heights = world.heights.slice();
-      post({ type: 'world', gen, density, mat, heights, trees: world.trees, crystals: world.crystals, spawn: world.spawn }, [density.buffer, mat.buffer, heights.buffer]);
+      const pack = world.copy();
+      const buf = [...pack.dense, ...pack.mdense].filter(Boolean).map((a) => a.buffer);
+      post({ type: 'world', gen, pack, trees: world.trees, crystals: world.crystals, spawn: world.spawn }, [...buf, pack.heights.buffer]);
       // then every chunk, those nearest the player first, so the island fills in from where they stand
       const [fx, , fz] = m.focus || world.spawn;
+      focus = [fx, fz];
+      stride.clear();
       const order = [];
       for (let cz = 0; cz < SIZE / CHUNK; cz++) for (let cx = 0; cx < SIZE / CHUNK; cx++) order.push([cx, cz, Math.hypot((cx + 0.5) * CHUNK - fx, (cz + 0.5) * CHUNK - fz)]);
       order.sort((a, b) => a[2] - b[2]);
@@ -60,6 +73,12 @@ export function createJob(post) {
       }
     } else if (!world || m.gen !== gen) {
       // a message for an island that is no longer there
+    } else if (m.type === 'focus') {
+      // the player moved: chunks that came near are meshed finely, those left behind coarsely
+      focus = [m.x, m.z];
+      const order = [...stride.keys()].map((k) => k.split(',').map(Number)).filter(([cx, cz]) => want(cx, cz) !== stride.get(cx + ',' + cz));
+      order.sort((a, b) => Math.hypot(a[0] * CHUNK - m.x, a[1] * CHUNK - m.z) - Math.hypot(b[0] * CHUNK - m.x, b[1] * CHUNK - m.z));
+      for (const [cx, cz] of order) ground(cx, cz);
     } else if (m.type === 'brush') {
       world.brush(m.x, m.y, m.z, m.r, m.add, m.mat);
       for (const [cx, cz] of m.chunks) ground(cx, cz);

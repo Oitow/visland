@@ -155,7 +155,8 @@ function fromWorker(m) {
 function onWorld(m) {
   const { name, seed, saved } = growing;
   const world = new World(seed);
-  Object.assign(world, { density: m.density, mat: m.mat, heights: m.heights, trees: m.trees, crystals: m.crystals, spawn: m.spawn });
+  world.unpack(m.pack);
+  Object.assign(world, { trees: m.trees, crystals: m.crystals, spawn: m.spawn });
   for (const id of saved?.found || []) if (world.crystals[id]) world.crystals[id].found = true;
   world.lanterns = saved?.lanterns || [];
   const g = {
@@ -549,6 +550,11 @@ function frame(now) {
     const walk = Math.hypot(p.vx, p.vz) > 0.5 && p.onGround ? Math.sin(g.time * 9) : 0;
     axe.rotation.set(-0.35 + lift, 0.2, -0.15);
     axe.position.set(0.34, -0.36 + walk * 0.012 + Math.max(0, lift) * 0.05, -0.55);
+    // tell the worker where the player is now and then, so the ground near them is meshed finely
+    if (Math.hypot(p.x - (g.focus?.[0] ?? -99), p.z - (g.focus?.[1] ?? -99)) > 4) {
+      g.focus = [p.x, p.z];
+      toWorker({ type: 'focus', gen, x: p.x, z: p.z });
+    }
     if ((g.saveTimer -= dt) <= 0) {
       g.saveTimer = 5;
       persist();
@@ -584,7 +590,7 @@ function frame(now) {
   ui.setClock(g.t);
   if (g.playing) {
     // the sea is louder the nearer the water is
-    const ground = g.world.heights[Math.floor(p.z) * SIZE + Math.floor(p.x)] ?? SEA;
+    const ground = g.world.heightAt(p.x, p.z);
     sound.sea(Math.max(0, Math.min(1, 1 - (ground - SEA) / 10)), g.time);
   }
   renderer.render(scene, camera);
